@@ -40,6 +40,25 @@
 #include <utility>
 #include <vector>
 
+// FIXME: be more explicit with a dedicated stateless resource" type
+template <>
+struct default_resource<bool>
+{
+    static inline constexpr bool value {false};
+};
+
+template <typename T>
+struct default_resource<T *>
+{
+    static inline constexpr std::nullptr_t value {nullptr};
+};
+
+template <>
+struct default_resource<GLuint>
+{
+    static inline constexpr GLuint value {0};
+};
+
 namespace
 {
 
