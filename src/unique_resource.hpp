@@ -9,35 +9,23 @@
 // #include <experimental/scope>
 
 template <typename R>
-struct default_resource;
-
-template <typename R>
-inline constexpr auto default_resource_v = default_resource<R>::value;
-
-template <typename R>
 concept resource =
-    !std::is_const_v<R> && !std::is_reference_v<R> && std::movable<R> &&
-    requires { default_resource_v<R>; } &&
-    std::constructible_from<R, decltype(default_resource_v<R>)> &&
-    std::equality_comparable_with<R, decltype(default_resource_v<R>)>;
+    !std::is_const_v<R> && !std::is_reference_v<R> && std::movable<R>;
 
 // FIXME: this might be incomplete, especially for reference types
 template <typename D, typename R>
 concept deleter =
     requires(D &d, R &r) { d(r); } && !std::is_const_v<D> && std::movable<D>;
 
-// TODO: we generally need to probably fix the behaviour when constructing the
-// deleter throws
-
 template <resource R, deleter<R> D>
 class [[nodiscard]] Unique_resource
 {
 public:
     constexpr Unique_resource() noexcept(
-        std::is_nothrow_constructible_v<R, decltype(default_resource_v<R>)> &&
+        std::is_nothrow_default_constructible_v<R> &&
         std::is_nothrow_default_constructible_v<D>)
-        requires std::default_initializable<D>
-        : m_resource {default_resource_v<R>}, m_deleter {}
+        requires std::default_initializable<R> && std::default_initializable<D>
+        : m_resource {}, m_deleter {}, m_owns_resource {false}
     {
     }
 
@@ -48,7 +36,9 @@ public:
     explicit constexpr Unique_resource(RR &&resource) noexcept(
         std::is_nothrow_constructible_v<R, RR &&> &&
         std::is_nothrow_default_constructible_v<D>)
-        : m_resource {std::forward<RR>(resource)}, m_deleter {}
+        : m_resource {std::forward<RR>(resource)},
+          m_deleter {},
+          m_owns_resource {true}
     {
     }
 
@@ -59,31 +49,34 @@ public:
         std::is_nothrow_constructible_v<R, RR &&> &&
         std::is_nothrow_constructible_v<D, DD &&>)
         : m_resource {std::forward<RR>(resource)},
-          m_deleter {std::forward<DD>(deleter)}
+          m_deleter {std::forward<DD>(deleter)},
+          m_owns_resource {true}
     {
     }
 
+    // FIXME: does this work with a reference deleter?
     // TODO: proper noexcept
-    constexpr Unique_resource(Unique_resource &&other) noexcept
-        : m_resource {std::exchange(other.m_resource,
-                                    R(default_resource_v<R>))},
-          m_deleter {std::move(other.m_deleter)}
+    constexpr Unique_resource(Unique_resource &&other)
+        : m_resource {std::move(other.m_resource)},
+          m_deleter {std::move(other.m_deleter)},
+          m_owns_resource {std::exchange(other.m_owns_resource, false)}
     {
     }
 
+    // FIXME: check behaviour
     // TODO: proper noexcept
-    constexpr Unique_resource &operator=(Unique_resource &&other) noexcept
+    constexpr Unique_resource &operator=(Unique_resource &&other)
     {
         if (this == &other)
         {
             return *this;
         }
 
-        if (m_resource != default_resource_v<R>)
+        if (m_owns_resource)
         {
             m_deleter(m_resource);
         }
-        m_resource = std::exchange(other.m_resource, R(default_resource_v<R>));
+        m_resource = std::move(other.m_resource);
 
         if constexpr (std::is_reference_v<D>)
         {
@@ -94,44 +87,41 @@ public:
             m_deleter = std::move(other.m_deleter);
         }
 
+        m_owns_resource = std::exchange(other.m_owns_resource, false);
+
         return *this;
     }
 
     Unique_resource(const Unique_resource &) = delete;
     Unique_resource &operator=(const Unique_resource &) = delete;
 
-    // TODO: proper noexcept
     constexpr ~Unique_resource() noexcept
     {
         reset();
     }
 
-    // TODO: proper noexcept
     constexpr void reset() noexcept
     {
-        if (m_resource != default_resource_v<R>)
+        if (m_owns_resource)
         {
             m_deleter(m_resource);
-            m_resource = R(default_resource_v<R>);
+            m_owns_resource = false;
         }
     }
 
-    // TODO: see cppreference.com for the complete requirements and behaviour
+    // TODO: proper noexcept
     template <typename RR>
-        requires std::constructible_from<R, RR &&>
-    constexpr void reset(RR &&resource) noexcept
+        requires std::assignable_from<R &, RR &&>
+    constexpr void reset(RR &&resource)
     {
-        if (m_resource != default_resource_v<R>)
-        {
-            m_deleter(m_resource);
-        }
+        reset();
         m_resource = std::forward<RR>(resource);
+        m_owns_resource = true;
     }
 
-    // FIXME: return
     constexpr void release() noexcept
     {
-        m_resource = R(default_resource_v<R>);
+        m_owns_resource = false;
     }
 
     [[nodiscard]] constexpr const R &get() const noexcept
@@ -146,12 +136,13 @@ public:
 
     [[nodiscard]] constexpr operator bool() const noexcept
     {
-        return m_resource != default_resource_v<R>;
+        return m_owns_resource;
     }
 
 private:
     [[no_unique_address]] R m_resource;
     [[no_unique_address]] D m_deleter;
+    bool m_owns_resource;
 };
 
 template <class RR, class DD>

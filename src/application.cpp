@@ -40,25 +40,6 @@
 #include <utility>
 #include <vector>
 
-// FIXME: be more explicit with a dedicated stateless resource" type
-template <>
-struct default_resource<bool>
-{
-    static inline constexpr bool value {false};
-};
-
-template <typename T>
-struct default_resource<T *>
-{
-    static inline constexpr std::nullptr_t value {nullptr};
-};
-
-template <>
-struct default_resource<GLuint>
-{
-    static inline constexpr GLuint value {0};
-};
-
 namespace
 {
 
@@ -140,83 +121,19 @@ namespace
 
 PFNGLGETERRORPROC glGetError {nullptr};
 
-#ifndef __EMSCRIPTEN__
-
 // clang-format off
 #define DECLARE_GL_FUNCTION(type, name) type name {nullptr}
 // clang-format on
 
-#else
-
-void check_gl_error(
-    const std::source_location &loc = std::source_location::current())
-{
-    auto error = glGetError();
-    if (error == GL_NO_ERROR)
-    {
-        return;
-    }
-
-    std::cerr << loc.file_name() << ':' << loc.line() << ": ";
-    const char *sep {""};
-
-    do
-    {
-        std::cerr << sep;
-        switch (error)
-        {
-        case GL_INVALID_ENUM: std::cerr << "GL_INVALID_ENUM"; break;
-        case GL_INVALID_VALUE: std::cerr << "GL_INVALID_VALUE"; break;
-        case GL_INVALID_OPERATION: std::cerr << "GL_INVALID_OPERATION"; break;
-        case GL_INVALID_FRAMEBUFFER_OPERATION:
-            std::cerr << "GL_INVALID_FRAMEBUFFER_OPERATION";
-            break;
-        case GL_OUT_OF_MEMORY: std::cerr << "GL_OUT_OF_MEMORY"; break;
-        default: std::cerr << "GL error " << error; break;
-        }
-        sep = ", ";
-    } while ((error = glGetError()) != GL_NO_ERROR);
-
-    std::cerr << "\n";
-}
-
-template <typename T>
-struct GL_function;
-
-template <typename R, typename... Args>
-struct GL_function<R (*)(Args...)>
-{
-    R operator()(
-        Args... args,
-        const std::source_location &loc = std::source_location::current()) const
-    {
-        if constexpr (std::is_void_v<R>)
-        {
-            function(args...);
-            check_gl_error(loc);
-        }
-        else
-        {
-            R result {function(args...)};
-            check_gl_error(loc);
-            return result;
-        }
-    }
-
-    R (*function)(Args...);
-};
-
-// clang-format off
-#define DECLARE_GL_FUNCTION(type, name) GL_function<type> name {nullptr}
-// clang-format on
-
-#endif
-
 ENUMERATE_GL_FUNCTIONS(DECLARE_GL_FUNCTION)
+
+struct Stateless
+{
+};
 
 struct GLFW_deleter
 {
-    void operator()(bool)
+    void operator()(Stateless)
     {
         glfwTerminate();
     }
@@ -224,7 +141,7 @@ struct GLFW_deleter
 
 struct Window_deleter
 {
-    void operator()(struct GLFWwindow *window)
+    void operator()(GLFWwindow *window)
     {
         glfwDestroyWindow(window);
     }
@@ -232,7 +149,7 @@ struct Window_deleter
 
 struct ImGui_deleter
 {
-    void operator()(bool)
+    void operator()(Stateless)
     {
         ImGui::DestroyContext();
     }
@@ -240,7 +157,7 @@ struct ImGui_deleter
 
 struct ImGui_glfw_deleter
 {
-    void operator()(bool)
+    void operator()(Stateless)
     {
         ImGui_ImplGlfw_Shutdown();
     }
@@ -248,7 +165,7 @@ struct ImGui_glfw_deleter
 
 struct ImGui_opengl_deleter
 {
-    void operator()(bool)
+    void operator()(Stateless)
     {
         ImGui_ImplOpenGL3_Shutdown();
     }
@@ -311,11 +228,11 @@ struct Raster_geometry
 
 struct Application_state
 {
-    Unique_resource<bool, GLFW_deleter> glfw_context;
+    Unique_resource<Stateless, GLFW_deleter> glfw_context;
     Unique_resource<GLFWwindow *, Window_deleter> window;
-    Unique_resource<bool, ImGui_deleter> imgui_context;
-    Unique_resource<bool, ImGui_glfw_deleter> imgui_glfw_context;
-    Unique_resource<bool, ImGui_opengl_deleter> imgui_opengl_context;
+    Unique_resource<Stateless, ImGui_deleter> imgui_context;
+    Unique_resource<Stateless, ImGui_glfw_deleter> imgui_glfw_context;
+    Unique_resource<Stateless, ImGui_opengl_deleter> imgui_opengl_context;
     Window_state window_state;
     std::vector<Line> lines;
     std::vector<Circle> circles;
@@ -334,21 +251,13 @@ struct Application_state
 template <std::invocable C, std::invocable<GLuint> D>
 [[nodiscard]] auto create_object(C &&create, D &&destroy)
 {
-#ifdef __EMSCRIPTEN__
-    return Unique_resource(create(), GL_deleter {destroy.function});
-#else
     return Unique_resource(create(), GL_deleter {destroy});
-#endif
 }
 
 template <std::invocable<GLenum> C, std::invocable<GLuint> D>
 [[nodiscard]] auto create_object(C &&create, GLenum arg, D &&destroy)
 {
-#ifdef __EMSCRIPTEN__
-    return Unique_resource(create(arg), GL_deleter {destroy.function});
-#else
     return Unique_resource(create(arg), GL_deleter {destroy});
-#endif
 }
 
 template <std::invocable<GLsizei, GLuint *> C,
@@ -357,11 +266,7 @@ template <std::invocable<GLsizei, GLuint *> C,
 {
     GLuint object {};
     create(1, &object);
-#ifdef __EMSCRIPTEN__
-    return Unique_resource(object, GL_array_deleter {destroy.function});
-#else
     return Unique_resource(object, GL_array_deleter {destroy});
-#endif
 }
 
 void glfw_error_callback(int error, const char *description)
@@ -393,15 +298,9 @@ void glfw_framebuffer_size_callback(GLFWwindow *window, int width, int height)
 
 void load_gl_functions()
 {
-#ifdef __EMSCRIPTEN__
-#define LOAD_GL_FUNCTION(type, name)                                           \
-    name.function = reinterpret_cast<type>(glfwGetProcAddress(#name));         \
-    assert(name.function != nullptr)
-#else
 #define LOAD_GL_FUNCTION(type, name)                                           \
     name = reinterpret_cast<type>(glfwGetProcAddress(#name));                  \
     assert(name != nullptr)
-#endif
 
     ENUMERATE_GL_FUNCTIONS(LOAD_GL_FUNCTION)
 
@@ -698,7 +597,7 @@ void create_raster_geometry(const std::vector<Line> &lines,
     {
         throw std::runtime_error("Failed to initialize GLFW");
     }
-    app.glfw_context.reset(true);
+    app.glfw_context.reset(Stateless {});
 
 #ifdef __EMSCRIPTEN__
     // WebGL 2.0
@@ -751,7 +650,7 @@ void create_raster_geometry(const std::vector<Line> &lines,
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    app.imgui_context.reset(true);
+    app.imgui_context.reset(Stateless {});
 
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ImGui::StyleColorsDark();
@@ -760,7 +659,7 @@ void create_raster_geometry(const std::vector<Line> &lines,
     {
         throw std::runtime_error("ImGui: failed to initialize GLFW backend");
     }
-    app.imgui_glfw_context.reset(true);
+    app.imgui_glfw_context.reset(Stateless {});
 
 #ifdef __EMSCRIPTEN__
     ImGui_ImplGlfw_InstallEmscriptenCallbacks(app.window.get(), "#canvas");
@@ -770,7 +669,7 @@ void create_raster_geometry(const std::vector<Line> &lines,
     {
         throw std::runtime_error("ImGui: failed to initialize OpenGL backend");
     }
-    app.imgui_opengl_context.reset(true);
+    app.imgui_opengl_context.reset(Stateless {});
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
