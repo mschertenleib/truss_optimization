@@ -41,6 +41,12 @@ add_compile_definitions(
     EIGEN_INITIALIZE_MATRICES_BY_NAN
 )
 
+CPMAddPackage(
+    GITHUB_REPOSITORY artem-ogre/CDT
+    GIT_TAG 1.4.4
+    DOWNLOAD_ONLY YES
+)
+
 if (NOT TARGET_WEB)
     set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
     set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -82,7 +88,10 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     src/unique_resource.hpp
     src/vec.hpp
 )
-target_include_directories(${CMAKE_PROJECT_NAME} SYSTEM PRIVATE ${eigen_SOURCE_DIR})
+target_include_directories(${CMAKE_PROJECT_NAME} SYSTEM PRIVATE
+    ${eigen_SOURCE_DIR}
+    ${CDT_SOURCE_DIR}/CDT/include
+)
 target_compile_features(${CMAKE_PROJECT_NAME} PRIVATE cxx_std_23)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE imgui)
 

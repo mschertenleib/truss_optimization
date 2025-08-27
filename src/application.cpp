@@ -31,6 +31,7 @@
 #include <memory>
 #include <numbers>
 #include <optional>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
@@ -72,7 +73,8 @@ namespace
     f(PFNGLVIEWPORTPROC, glViewport);                                          \
     f(PFNGLCLEARCOLORPROC, glClearColor);                                      \
     f(PFNGLCLEARPROC, glClear);                                                \
-    f(PFNGLBLENDFUNCPROC, glBlendFunc);
+    f(PFNGLBLENDFUNCPROC, glBlendFunc);                                        \
+    f(PFNGLBLENDEQUATIONPROC, glBlendEquation);
 
 #define ENUMERATE_GL_FUNCTIONS_430(f)                                          \
     f(PFNGLDEBUGMESSAGECALLBACKPROC, glDebugMessageCallback);
@@ -171,12 +173,14 @@ struct Line
 {
     vec2 a;
     vec2 b;
+    vec3 color;
 };
 
 struct Circle
 {
     vec2 center;
     float radius;
+    vec3 color;
 };
 
 struct Raster_geometry
@@ -480,8 +484,6 @@ void create_raster_geometry(const std::vector<Line> &lines,
     geometry.vertices.clear();
     geometry.indices.clear();
 
-    constexpr vec3 color {1.0f, 1.0f, 1.0f};
-
     geometry.line_indices_offset = geometry.indices.size();
     for (const auto &line : lines)
     {
@@ -499,14 +501,16 @@ void create_raster_geometry(const std::vector<Line> &lines,
 
         const auto first_index =
             static_cast<std::uint32_t>(geometry.vertices.size());
+        geometry.vertices.push_back({start_left,
+                                     {-0.5f, 0.5f, -aspect_ratio - 0.5f, 0.0f},
+                                     line.color});
+        geometry.vertices.push_back({start_right,
+                                     {0.5f, 0.5f, -aspect_ratio - 0.5f, 0.0f},
+                                     line.color});
         geometry.vertices.push_back(
-            {start_left, {-0.5f, 0.5f, -aspect_ratio - 0.5f, 0.0f}, color});
+            {end_right, {0.5f, -aspect_ratio - 0.5f, 0.5f, 0.0f}, line.color});
         geometry.vertices.push_back(
-            {start_right, {0.5f, 0.5f, -aspect_ratio - 0.5f, 0.0f}, color});
-        geometry.vertices.push_back(
-            {end_right, {0.5f, -aspect_ratio - 0.5f, 0.5f, 0.0f}, color});
-        geometry.vertices.push_back(
-            {end_left, {-0.5f, -aspect_ratio - 0.5f, 0.5f, 0.0f}, color});
+            {end_left, {-0.5f, -aspect_ratio - 0.5f, 0.5f, 0.0f}, line.color});
         geometry.indices.push_back(first_index + 0);
         geometry.indices.push_back(first_index + 1);
         geometry.indices.push_back(first_index + 2);
@@ -530,13 +534,13 @@ void create_raster_geometry(const std::vector<Line> &lines,
         const auto first_index =
             static_cast<std::uint32_t>(geometry.vertices.size());
         geometry.vertices.push_back(
-            {bottom_left, {-1.0, -1.0f, rel_thickness, 0.0f}, color});
+            {bottom_left, {-1.0, -1.0f, rel_thickness, 0.0f}, circle.color});
         geometry.vertices.push_back(
-            {bottom_right, {1.0f, -1.0f, rel_thickness, 0.0f}, color});
+            {bottom_right, {1.0f, -1.0f, rel_thickness, 0.0f}, circle.color});
         geometry.vertices.push_back(
-            {top_right, {1.0f, 1.0f, rel_thickness, 0.0f}, color});
+            {top_right, {1.0f, 1.0f, rel_thickness, 0.0f}, circle.color});
         geometry.vertices.push_back(
-            {top_left, {-1.0f, 1.0f, rel_thickness, 0.0f}, color});
+            {top_left, {-1.0f, 1.0f, rel_thickness, 0.0f}, circle.color});
         geometry.indices.push_back(first_index + 0);
         geometry.indices.push_back(first_index + 1);
         geometry.indices.push_back(first_index + 2);
@@ -635,25 +639,20 @@ void create_raster_geometry(const std::vector<Line> &lines,
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    // Generate truss
-    constexpr std::uint32_t num_nodes {21};
-    float x {-1.2f};
-    float y {0.0f};
-    constexpr float dx {2.4f / (num_nodes - 1)};
-    constexpr float dy {0.4f};
+    constexpr std::uint32_t num_nodes {121};
+    std::minstd_rand rng(17657575);
+    std::uniform_real_distribution<float> x(-1.0f, 1.0f);
+    std::uniform_real_distribution<float> y(-1.0f, 1.0f);
     for (std::uint32_t i {0}; i < num_nodes; ++i)
     {
-        app.analysis.nodes.push_back({x, y});
-        x += dx;
-        y += i % 2 == 0 ? dy : -dy;
+        app.analysis.nodes.push_back({x(rng), y(rng)});
     }
-    for (std::uint32_t i {0}; i < num_nodes - 1; ++i)
+    make_triangulation(app.analysis);
+
+    app.analysis.activations.resize(app.analysis.elements.size());
+    for (auto &activation : app.analysis.activations)
     {
-        app.analysis.elements.push_back({i, i + 1});
-        if (i < num_nodes - 2)
-        {
-            app.analysis.elements.push_back({i, i + 2});
-        }
+        activation = 1.0f;
     }
     app.analysis.fixed_dofs = {0, 1, 2, 3};
     for (std::uint32_t i {4}; i < num_nodes * 2; ++i)
@@ -666,7 +665,15 @@ void create_raster_geometry(const std::vector<Line> &lines,
     app.lines.clear();
     for (const auto [i, j] : app.analysis.elements)
     {
-        app.lines.push_back({app.analysis.nodes[i], app.analysis.nodes[j]});
+        app.lines.push_back({.a = app.analysis.nodes[i],
+                             .b = app.analysis.nodes[j],
+                             .color = {0.75f, 0.75f, 0.75f}});
+    }
+    app.circles.clear();
+    for (const auto &node : app.analysis.nodes)
+    {
+        app.circles.push_back(
+            {.center = node, .radius = 0.02f, .color = {0.75f, 0.25f, 0.25f}});
     }
     create_raster_geometry(app.lines, app.circles, 0.03f, app.raster_geometry);
 
@@ -732,25 +739,35 @@ void main_loop_update(Application_state &app)
 {
     glfwPollEvents();
 
-    static float force_factor {};
-    const auto base_loads = app.analysis.loads;
-    app.analysis.loads *= force_factor;
+    static float scale_factor {};
     assemble(app.analysis);
-    solve(app.analysis);
-    app.analysis.loads = base_loads;
+    const auto analysis_result = solve(app.analysis);
 
     app.lines.clear();
-    for (const auto [i, j] : app.analysis.elements)
+    for (std::size_t e {0}; e < app.analysis.elements.size(); ++e)
     {
+        const auto [i, j] = app.analysis.elements[e];
         const auto node_i = app.analysis.nodes[i];
-        const vec2 disp_i {app.analysis.displacements(2 * i),
-                           app.analysis.displacements(2 * i + 1)};
+        const vec2 disp_i {analysis_result.displacements(2 * i),
+                           analysis_result.displacements(2 * i + 1)};
         const auto node_j = app.analysis.nodes[j];
-        const vec2 disp_j {app.analysis.displacements(2 * j),
-                           app.analysis.displacements(2 * j + 1)};
-        app.lines.push_back({node_i + disp_i, node_j + disp_j});
+        const vec2 disp_j {analysis_result.displacements(2 * j),
+                           analysis_result.displacements(2 * j + 1)};
+        app.lines.push_back({.a = node_i + scale_factor * disp_i,
+                             .b = node_j + scale_factor * disp_j,
+                             .color = {0.75f, 0.75f, 0.75f}});
     }
-    create_raster_geometry(app.lines, app.circles, 0.03f, app.raster_geometry);
+    app.circles.clear();
+    for (std::size_t i {0}; i < app.analysis.nodes.size(); ++i)
+    {
+        const auto &node = app.analysis.nodes[i];
+        const vec2 disp {analysis_result.displacements(2 * i),
+                         analysis_result.displacements(2 * i + 1)};
+        app.circles.push_back({.center = node + scale_factor * disp,
+                               .radius = 0.02f,
+                               .color = {0.75f, 0.25f, 0.25f}});
+    }
+    create_raster_geometry(app.lines, app.circles, 0.02f, app.raster_geometry);
     update_vertex_buffer(app.vao.get(), app.vbo.get(), app.raster_geometry);
 
     ImGui_ImplOpenGL3_NewFrame();
@@ -762,7 +779,7 @@ void main_loop_update(Application_state &app)
         ImGui::Text("%.2f ms/frame, %.2f fps",
                     static_cast<double>(1000.0f / ImGui::GetIO().Framerate),
                     static_cast<double>(ImGui::GetIO().Framerate));
-        ImGui::SliderFloat("Force", &force_factor, 0.0f, 500000.0f);
+        ImGui::SliderFloat("Deformation scale", &scale_factor, 0.0f, 500000.0f);
     }
     ImGui::End();
 
