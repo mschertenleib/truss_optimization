@@ -55,8 +55,6 @@ namespace
     f(PFNGLLINKPROGRAMPROC, glLinkProgram);                                    \
     f(PFNGLGETPROGRAMIVPROC, glGetProgramiv);                                  \
     f(PFNGLGETPROGRAMINFOLOGPROC, glGetProgramInfoLog);                        \
-    f(PFNGLGETUNIFORMLOCATIONPROC, glGetUniformLocation);                      \
-    f(PFNGLUNIFORM2FPROC, glUniform2f);                                        \
     f(PFNGLGENBUFFERSPROC, glGenBuffers);                                      \
     f(PFNGLDELETEBUFFERSPROC, glDeleteBuffers);                                \
     f(PFNGLBINDBUFFERPROC, glBindBuffer);                                      \
@@ -65,7 +63,6 @@ namespace
     f(PFNGLGENVERTEXARRAYSPROC, glGenVertexArrays);                            \
     f(PFNGLDELETEVERTEXARRAYSPROC, glDeleteVertexArrays);                      \
     f(PFNGLBINDVERTEXARRAYPROC, glBindVertexArray);                            \
-    f(PFNGLUNIFORMBLOCKBINDINGPROC, glUniformBlockBinding);                    \
     f(PFNGLVERTEXATTRIBPOINTERPROC, glVertexAttribPointer);                    \
     f(PFNGLENABLEVERTEXATTRIBARRAYPROC, glEnableVertexAttribArray);            \
     f(PFNGLDRAWELEMENTSPROC, glDrawElements);                                  \
@@ -193,6 +190,14 @@ struct Raster_geometry
     std::vector<std::uint32_t> indices;
 };
 
+struct Viewport
+{
+    int x;
+    int y;
+    int width;
+    int height;
+};
+
 struct Application_state
 {
     Analysis_state analysis;
@@ -210,10 +215,6 @@ struct Application_state
     Unique_resource<GLuint, GL_array_deleter> ibo {};
     Unique_resource<GLuint, GL_deleter> line_program {};
     Unique_resource<GLuint, GL_deleter> circle_program {};
-    GLint loc_view_position_draw_line {};
-    GLint loc_view_size_draw_line {};
-    GLint loc_view_position_draw_circle {};
-    GLint loc_view_size_draw_circle {};
 };
 
 template <std::invocable C, std::invocable<GLuint> D>
@@ -363,16 +364,12 @@ layout (location = 0) in vec2 vertex_position;
 layout (location = 1) in vec4 vertex_local;
 layout (location = 2) in vec3 vertex_color;
 
-uniform vec2 view_position;
-uniform vec2 view_size;
-
 out vec4 local;
 out vec3 color;
 
 void main()
 {
-    vec2 position = (vertex_position - view_position) / (0.5 * view_size);
-    gl_Position = vec4(position, 0.0, 1.0);
+    gl_Position = vec4(vertex_position, 0.0, 1.0);
     local = vertex_local;
     color = vertex_color;
 })";
@@ -552,6 +549,36 @@ void create_raster_geometry(const std::vector<Line> &lines,
         geometry.indices.size() - geometry.circle_indices_offset;
 }
 
+[[nodiscard]] constexpr Viewport centered_viewport(
+    float aspect_ratio, int available_width, int available_height) noexcept
+{
+    const auto available_aspect_ratio = static_cast<float>(available_width) /
+                                        static_cast<float>(available_height);
+    if (aspect_ratio > available_aspect_ratio)
+    {
+        const auto height = static_cast<int>(
+            static_cast<float>(available_width) / aspect_ratio);
+        return {0, (available_height - height) / 2, available_width, height};
+    }
+    else
+    {
+        const auto width = static_cast<int>(
+            static_cast<float>(available_height) * aspect_ratio);
+        return {(available_width - width) / 2, 0, width, available_height};
+    }
+}
+
+[[nodiscard]] constexpr float screen_to_world(float x,
+                                              int screen_min,
+                                              int screen_size,
+                                              float world_center,
+                                              float world_size) noexcept
+{
+    const auto u =
+        (x - static_cast<float>(screen_min)) / static_cast<float>(screen_size);
+    return world_center + (u - 0.5f) * world_size;
+}
+
 [[nodiscard]] Application_state init_application()
 {
     Application_state app {};
@@ -593,6 +620,7 @@ void create_raster_geometry(const std::vector<Line> &lines,
     glfwMakeContextCurrent(app.window.get());
 
     glfwSetWindowUserPointer(app.window.get(), &app.window_state);
+
     glfwSetWindowContentScaleCallback(app.window.get(),
                                       &glfw_window_content_scale_callback);
     glfwSetFramebufferSizeCallback(app.window.get(),
@@ -688,33 +716,15 @@ void create_raster_geometry(const std::vector<Line> &lines,
         glsl_version, vertex_shader_code, line_fragment_shader_code);
     app.circle_program = create_program(
         glsl_version, vertex_shader_code, circle_fragment_shader_code);
-    app.loc_view_position_draw_line =
-        glGetUniformLocation(app.line_program.get(), "view_position");
-    app.loc_view_size_draw_line =
-        glGetUniformLocation(app.line_program.get(), "view_size");
-    app.loc_view_position_draw_circle =
-        glGetUniformLocation(app.circle_program.get(), "view_position");
-    app.loc_view_size_draw_circle =
-        glGetUniformLocation(app.circle_program.get(), "view_size");
 
     return app;
 }
 
 void draw_geometry(const Application_state &app)
 {
-    // FIXME
-    const float view_x {0.0f};
-    const float view_y {0.0f};
-    const float view_height {2.0f};
-    const float view_width {
-        view_height * static_cast<float>(app.window_state.framebuffer_width) /
-        static_cast<float>(app.window_state.framebuffer_height)};
-
     glBindVertexArray(app.vao.get());
 
     glUseProgram(app.line_program.get());
-    glUniform2f(app.loc_view_position_draw_line, view_x, view_y);
-    glUniform2f(app.loc_view_size_draw_line, view_width, view_height);
     glDrawElements(
         GL_TRIANGLES,
         static_cast<GLsizei>(app.raster_geometry.line_indices_size),
@@ -723,8 +733,6 @@ void draw_geometry(const Application_state &app)
                                  sizeof(std::uint32_t)));
 
     glUseProgram(app.circle_program.get());
-    glUniform2f(app.loc_view_position_draw_circle, view_x, view_y);
-    glUniform2f(app.loc_view_size_draw_circle, view_width, view_height);
     glDrawElements(
         GL_TRIANGLES,
         static_cast<GLsizei>(app.raster_geometry.circle_indices_size),
@@ -738,6 +746,27 @@ void draw_geometry(const Application_state &app)
 void main_loop_update(Application_state &app)
 {
     glfwPollEvents();
+
+    const auto viewport =
+        centered_viewport(1.0f,
+                          app.window_state.framebuffer_width,
+                          app.window_state.framebuffer_height);
+
+    double mouse_x {};
+    double mouse_y {};
+    glfwGetCursorPos(app.window.get(), &mouse_x, &mouse_y);
+    const auto mouse_world_x =
+        screen_to_world(static_cast<float>(mouse_x) * app.window_state.scale_x,
+                        viewport.x,
+                        viewport.width,
+                        0.0f,
+                        2.0f);
+    const auto mouse_world_y =
+        screen_to_world(static_cast<float>(mouse_y) * app.window_state.scale_y,
+                        viewport.y + viewport.height,
+                        -viewport.height,
+                        0.0f,
+                        2.0f);
 
     static float scale_factor {};
     assemble(app.analysis);
@@ -785,6 +814,7 @@ void main_loop_update(Application_state &app)
 
     ImGui::Render();
 
+    glViewport(viewport.x, viewport.y, viewport.width, viewport.height);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     draw_geometry(app);
