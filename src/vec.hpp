@@ -1,5 +1,5 @@
-#ifndef VEC2_HPP
-#define VEC2_HPP
+#ifndef VEC_HPP
+#define VEC_HPP
 
 #include <cmath>
 
@@ -177,4 +177,4 @@ constexpr vec2 &operator/=(vec2 &v, float f) noexcept
     return v * (1.0f / norm(v));
 }
 
-#endif // VEC2_HPP
+#endif

@@ -78,6 +78,7 @@ add_executable(${CMAKE_PROJECT_NAME})
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     src/main.cpp
     src/application.hpp src/application.cpp
+    src/analysis.hpp src/analysis.cpp
     src/unique_resource.hpp
     src/vec.hpp
 )

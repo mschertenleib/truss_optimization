@@ -1,4 +1,5 @@
 #include "application.hpp"
+#include "analysis.hpp"
 #include "unique_resource.hpp"
 #include "vec.hpp"
 
@@ -16,8 +17,6 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 
-#include <Eigen/Core>
-
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -27,13 +26,11 @@
 #include <cstring>
 #include <format>
 #include <fstream>
-#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <memory>
 #include <numbers>
 #include <optional>
-#include <source_location>
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
@@ -58,27 +55,11 @@ namespace
     f(PFNGLGETPROGRAMIVPROC, glGetProgramiv);                                  \
     f(PFNGLGETPROGRAMINFOLOGPROC, glGetProgramInfoLog);                        \
     f(PFNGLGETUNIFORMLOCATIONPROC, glGetUniformLocation);                      \
-    f(PFNGLGETUNIFORMBLOCKINDEXPROC, glGetUniformBlockIndex);                  \
-    f(PFNGLUNIFORM1IPROC, glUniform1i);                                        \
-    f(PFNGLUNIFORM1UIPROC, glUniform1ui);                                      \
-    f(PFNGLUNIFORM2UIPROC, glUniform2ui);                                      \
-    f(PFNGLUNIFORM1FPROC, glUniform1f);                                        \
     f(PFNGLUNIFORM2FPROC, glUniform2f);                                        \
-    f(PFNGLGENTEXTURESPROC, glGenTextures);                                    \
-    f(PFNGLDELETETEXTURESPROC, glDeleteTextures);                              \
-    f(PFNGLBINDTEXTUREPROC, glBindTexture);                                    \
-    f(PFNGLTEXPARAMETERIPROC, glTexParameteri);                                \
-    f(PFNGLTEXIMAGE2DPROC, glTexImage2D);                                      \
-    f(PFNGLGENFRAMEBUFFERSPROC, glGenFramebuffers);                            \
-    f(PFNGLDELETEFRAMEBUFFERSPROC, glDeleteFramebuffers);                      \
-    f(PFNGLBINDFRAMEBUFFERPROC, glBindFramebuffer);                            \
-    f(PFNGLFRAMEBUFFERTEXTURE2DPROC, glFramebufferTexture2D);                  \
-    f(PFNGLCHECKFRAMEBUFFERSTATUSPROC, glCheckFramebufferStatus);              \
     f(PFNGLGENBUFFERSPROC, glGenBuffers);                                      \
     f(PFNGLDELETEBUFFERSPROC, glDeleteBuffers);                                \
     f(PFNGLBINDBUFFERPROC, glBindBuffer);                                      \
     f(PFNGLBUFFERDATAPROC, glBufferData);                                      \
-    f(PFNGLBINDBUFFERBASEPROC, glBindBufferBase);                              \
     f(PFNGLBUFFERSUBDATAPROC, glBufferSubData);                                \
     f(PFNGLGENVERTEXARRAYSPROC, glGenVertexArrays);                            \
     f(PFNGLDELETEVERTEXARRAYSPROC, glDeleteVertexArrays);                      \
@@ -87,30 +68,14 @@ namespace
     f(PFNGLVERTEXATTRIBPOINTERPROC, glVertexAttribPointer);                    \
     f(PFNGLENABLEVERTEXATTRIBARRAYPROC, glEnableVertexAttribArray);            \
     f(PFNGLDRAWELEMENTSPROC, glDrawElements);                                  \
-    f(PFNGLDRAWARRAYSPROC, glDrawArrays);                                      \
     f(PFNGLUSEPROGRAMPROC, glUseProgram);                                      \
     f(PFNGLVIEWPORTPROC, glViewport);                                          \
     f(PFNGLCLEARCOLORPROC, glClearColor);                                      \
     f(PFNGLCLEARPROC, glClear);                                                \
-    f(PFNGLBLITFRAMEBUFFERPROC, glBlitFramebuffer);                            \
-    f(PFNGLGETINTEGERVPROC, glGetIntegerv);                                    \
-    f(PFNGLGETSTRINGIPROC, glGetStringi);                                      \
-    f(PFNGLFINISHPROC, glFinish);                                              \
-    f(PFNGLBLENDFUNCPROC, glBlendFunc);                                        \
-    f(PFNGLBLENDCOLORPROC, glBlendColor);                                      \
-    f(PFNGLACTIVETEXTUREPROC, glActiveTexture);                                \
-    f(PFNGLGETSTRINGPROC, glGetString);
+    f(PFNGLBLENDFUNCPROC, glBlendFunc);
 
 #define ENUMERATE_GL_FUNCTIONS_430(f)                                          \
-    f(PFNGLDEBUGMESSAGECALLBACKPROC, glDebugMessageCallback);                  \
-    f(PFNGLGETTEXIMAGEPROC, glGetTexImage);                                    \
-    f(PFNGLDISPATCHCOMPUTEPROC, glDispatchCompute);                            \
-    f(PFNGLMEMORYBARRIERPROC, glMemoryBarrier);                                \
-    f(PFNGLBINDIMAGETEXTUREPROC, glBindImageTexture);                          \
-    f(PFNGLGENQUERIESPROC, glGenQueries);                                      \
-    f(PFNGLDELETEQUERIESPROC, glDeleteQueries);                                \
-    f(PFNGLQUERYCOUNTERPROC, glQueryCounter);                                  \
-    f(PFNGLGETQUERYOBJECTUI64VPROC, glGetQueryObjectui64v);
+    f(PFNGLDEBUGMESSAGECALLBACKPROC, glDebugMessageCallback);
 
 #ifndef __EMSCRIPTEN__
 #define ENUMERATE_GL_FUNCTIONS(f)                                              \
@@ -118,8 +83,6 @@ namespace
 #else
 #define ENUMERATE_GL_FUNCTIONS(f) ENUMERATE_GL_FUNCTIONS_COMMON(f)
 #endif
-
-PFNGLGETERRORPROC glGetError {nullptr};
 
 // clang-format off
 #define DECLARE_GL_FUNCTION(type, name) type name {nullptr}
@@ -228,6 +191,7 @@ struct Raster_geometry
 
 struct Application_state
 {
+    Analysis_state analysis;
     Unique_resource<Stateless, GLFW_deleter> glfw_context;
     Unique_resource<GLFWwindow *, Window_deleter> window;
     Unique_resource<Stateless, ImGui_deleter> imgui_context;
@@ -303,9 +267,6 @@ void load_gl_functions()
     assert(name != nullptr)
 
     ENUMERATE_GL_FUNCTIONS(LOAD_GL_FUNCTION)
-
-    glGetError =
-        reinterpret_cast<PFNGLGETERRORPROC>(glfwGetProcAddress("glGetError"));
 
 #undef LOAD_GL_FUNCTION
 }
@@ -674,12 +635,39 @@ void create_raster_geometry(const std::vector<Line> &lines,
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    constexpr vec2 p0 {-0.5f, -0.5f};
-    constexpr vec2 p1 {0.0f, 0.5f};
-    constexpr vec2 p2 {0.5f, -0.5f};
-    app.lines = {{p0, p1}, {p1, p2}, {p2, p0}, {{0.0f, -0.7f}, {0.0f, -0.3f}}};
-    app.circles = {{.center = {0.6f, 0.3f}, .radius = 0.1f}};
+    // Generate truss
+    constexpr std::uint32_t num_nodes {21};
+    float x {-1.2f};
+    float y {0.0f};
+    constexpr float dx {2.4f / (num_nodes - 1)};
+    constexpr float dy {0.4f};
+    for (std::uint32_t i {0}; i < num_nodes; ++i)
+    {
+        app.analysis.nodes.push_back({x, y});
+        x += dx;
+        y += i % 2 == 0 ? dy : -dy;
+    }
+    for (std::uint32_t i {0}; i < num_nodes - 1; ++i)
+    {
+        app.analysis.elements.push_back({i, i + 1});
+        if (i < num_nodes - 2)
+        {
+            app.analysis.elements.push_back({i, i + 2});
+        }
+    }
+    app.analysis.fixed_dofs = {0, 1, 2, 3};
+    for (std::uint32_t i {4}; i < num_nodes * 2; ++i)
+    {
+        app.analysis.free_dofs.push_back(i);
+    }
+    app.analysis.loads.setZero(app.analysis.free_dofs.size());
+    app.analysis.loads(num_nodes * 2 - 1 - 4) = -1.0f;
 
+    app.lines.clear();
+    for (const auto [i, j] : app.analysis.elements)
+    {
+        app.lines.push_back({app.analysis.nodes[i], app.analysis.nodes[j]});
+    }
     create_raster_geometry(app.lines, app.circles, 0.03f, app.raster_geometry);
 
     // TODO: we should probably organize the raster geometry better. We need to
@@ -744,11 +732,39 @@ void main_loop_update(Application_state &app)
 {
     glfwPollEvents();
 
+    static float force_factor {};
+    const auto base_loads = app.analysis.loads;
+    app.analysis.loads *= force_factor;
+    assemble(app.analysis);
+    solve(app.analysis);
+    app.analysis.loads = base_loads;
+
+    app.lines.clear();
+    for (const auto [i, j] : app.analysis.elements)
+    {
+        const auto node_i = app.analysis.nodes[i];
+        const vec2 disp_i {app.analysis.displacements(2 * i),
+                           app.analysis.displacements(2 * i + 1)};
+        const auto node_j = app.analysis.nodes[j];
+        const vec2 disp_j {app.analysis.displacements(2 * j),
+                           app.analysis.displacements(2 * j + 1)};
+        app.lines.push_back({node_i + disp_i, node_j + disp_j});
+    }
+    create_raster_geometry(app.lines, app.circles, 0.03f, app.raster_geometry);
+    update_vertex_buffer(app.vao.get(), app.vbo.get(), app.raster_geometry);
+
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    ImGui::ShowMetricsWindow();
+    if (ImGui::Begin("Test"))
+    {
+        ImGui::Text("%.2f ms/frame, %.2f fps",
+                    static_cast<double>(1000.0f / ImGui::GetIO().Framerate),
+                    static_cast<double>(ImGui::GetIO().Framerate));
+        ImGui::SliderFloat("Force", &force_factor, 0.0f, 500000.0f);
+    }
+    ImGui::End();
 
     ImGui::Render();
 
