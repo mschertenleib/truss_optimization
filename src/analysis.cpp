@@ -1,6 +1,6 @@
 #include "analysis.hpp"
 
-#include <CDT.h>
+#include "CDT.h"
 
 #include <Eigen/SparseCholesky>
 

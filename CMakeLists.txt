@@ -31,6 +31,12 @@ include(${CPM_DOWNLOAD_LOCATION})
 
 
 CPMAddPackage(
+    GITHUB_REPOSITORY nothings/stb
+    GIT_TAG 981f08a
+    DOWNLOAD_ONLY YES
+)
+
+CPMAddPackage(
     GITLAB_REPOSITORY libeigen/eigen
     GIT_TAG c487a4fe
     DOWNLOAD_ONLY YES
@@ -89,6 +95,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     src/vec.hpp
 )
 target_include_directories(${CMAKE_PROJECT_NAME} SYSTEM PRIVATE
+    ${stb_SOURCE_DIR}
     ${eigen_SOURCE_DIR}
     ${CDT_SOURCE_DIR}/CDT/include
 )

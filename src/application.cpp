@@ -3,6 +3,10 @@
 #include "unique_resource.hpp"
 #include "vec.hpp"
 
+#define STB_TRUETYPE_IMPLEMENTATION
+#define STBTT_STATIC
+#include "stb_truetype.h"
+
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #define GLFW_INCLUDE_ES3
@@ -24,7 +28,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <format>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -71,7 +75,13 @@ namespace
     f(PFNGLCLEARCOLORPROC, glClearColor);                                      \
     f(PFNGLCLEARPROC, glClear);                                                \
     f(PFNGLBLENDFUNCPROC, glBlendFunc);                                        \
-    f(PFNGLBLENDEQUATIONPROC, glBlendEquation);
+    f(PFNGLBLENDEQUATIONPROC, glBlendEquation);                                \
+    f(PFNGLGENTEXTURESPROC, glGenTextures);                                    \
+    f(PFNGLDELETETEXTURESPROC, glDeleteTextures);                              \
+    f(PFNGLBINDTEXTUREPROC, glBindTexture);                                    \
+    f(PFNGLPIXELSTOREIPROC, glPixelStorei);                                    \
+    f(PFNGLTEXIMAGE2DPROC, glTexImage2D);                                      \
+    f(PFNGLTEXPARAMETERIPROC, glTexParameteri);
 
 #define ENUMERATE_GL_FUNCTIONS_430(f)                                          \
     f(PFNGLDEBUGMESSAGECALLBACKPROC, glDebugMessageCallback);
@@ -198,7 +208,7 @@ struct Viewport
     int height;
 };
 
-struct Application_state
+struct Application
 {
     Analysis_state analysis;
     Unique_resource<Stateless, GLFW_deleter> glfw_context;
@@ -473,6 +483,86 @@ void update_vertex_buffer(GLuint vao,
     glBindVertexArray(0);
 }
 
+[[nodiscard]] std::vector<std::uint8_t> read_binary_file(const char *file_name)
+{
+    const std::filesystem::path path(file_name);
+    if (!std::filesystem::exists(path))
+    {
+        std::ostringstream oss;
+        oss << "File " << path << " does not exist";
+        throw std::runtime_error(oss.str());
+    }
+
+    const auto file_size = std::filesystem::file_size(path);
+    std::vector<std::uint8_t> buffer(file_size);
+
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+    {
+        std::ostringstream oss;
+        oss << "Failed to open file " << path;
+        throw std::runtime_error(oss.str());
+    }
+
+    file.read(reinterpret_cast<char *>(buffer.data()),
+              static_cast<std::streamsize>(file_size));
+    if (file.eof())
+    {
+        std::ostringstream oss;
+        oss << "End-of-file reached while reading file " << path;
+        throw std::runtime_error(oss.str());
+    }
+
+    return buffer;
+}
+
+void create_font_texture()
+{
+    const auto ttf = read_binary_file("font/B612Mono-Regular.ttf");
+    constexpr int atlas_width {512};
+    constexpr int atlas_height {512};
+    std::vector<std::uint8_t> pixels(atlas_width * atlas_height);
+
+    stbtt_pack_context pc {};
+    stbtt_PackBegin(
+        &pc, pixels.data(), atlas_width, atlas_height, 0, 1, nullptr);
+    stbtt_PackSetOversampling(&pc, 2, 2);
+    constexpr int num_chars {95};
+    stbtt_packedchar char_data[num_chars] {};
+    stbtt_PackFontRange(&pc, ttf.data(), 0, 32.0f, 32, num_chars, char_data);
+    stbtt_PackEnd(&pc);
+
+    auto font_texture = create_object(glGenTextures, glDeleteTextures);
+    glBindTexture(GL_TEXTURE_2D, font_texture.get());
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D,
+                 0,
+                 GL_R8,
+                 atlas_width,
+                 atlas_height,
+                 0,
+                 GL_RED,
+                 GL_UNSIGNED_BYTE,
+                 pixels.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    /*
+    // --- When drawing a string ---
+float x = 20.0f, y = 50.0f; // baseline position in screen space
+stbtt_aligned_quad q;
+for (const char* p = "Hello OpenGL!"; *p; ++p) {
+    if (*p < 32 || *p > 126) continue;
+    stbtt_GetPackedQuad(cdata, ATLAS_W, ATLAS_H, *p - 32, &x, &y, &q, 1);
+    // append 4 verts (q.x0/q.y0..q.x1/q.y1, q.s0/q.t0..q.s1/q.t1) to your
+vertex buffer
+}
+// In your fragment shader: float a = texture(uAtlas, uv).r; outColor =
+vec4(textColor, a);
+// Make sure blending is enabled: SRC_ALPHA, ONE_MINUS_SRC_ALPHA.
+    */
+}
+
 void create_raster_geometry(const std::vector<Line> &lines,
                             const std::vector<Circle> &circles,
                             float thickness,
@@ -579,9 +669,9 @@ void create_raster_geometry(const std::vector<Line> &lines,
     return world_center + (u - 0.5f) * world_size;
 }
 
-[[nodiscard]] Application_state init_application()
+[[nodiscard]] Application init_application()
 {
-    Application_state app {};
+    Application app {};
 
     glfwSetErrorCallback(&glfw_error_callback);
 
@@ -717,10 +807,12 @@ void create_raster_geometry(const std::vector<Line> &lines,
     app.circle_program = create_program(
         glsl_version, vertex_shader_code, circle_fragment_shader_code);
 
+    create_font_texture();
+
     return app;
 }
 
-void draw_geometry(const Application_state &app)
+void draw_geometry(const Application &app)
 {
     glBindVertexArray(app.vao.get());
 
@@ -743,7 +835,7 @@ void draw_geometry(const Application_state &app)
     glBindVertexArray(0);
 }
 
-void main_loop_update(Application_state &app)
+void main_loop_update(Application &app)
 {
     glfwPollEvents();
 
@@ -841,8 +933,7 @@ void run_application()
     ImGui::GetIO().IniFilename = nullptr;
 
     emscripten_set_main_loop_arg(
-        [](void *arg)
-        { main_loop_update(*static_cast<Application_state *>(arg)); },
+        [](void *arg) { main_loop_update(*static_cast<Application *>(arg)); },
         &app,
         0,
         true);
