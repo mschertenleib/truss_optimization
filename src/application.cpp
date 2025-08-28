@@ -161,14 +161,6 @@ struct GL_array_deleter
     }
 };
 
-struct Window_state
-{
-    float scale_x;
-    float scale_y;
-    int framebuffer_width;
-    int framebuffer_height;
-};
-
 struct Vertex
 {
     vec2 position;
@@ -208,15 +200,34 @@ struct Viewport
     int height;
 };
 
+struct Rectangle
+{
+    vec2 pos;
+    vec2 size;
+};
+
+enum struct State
+{
+    idle,
+    placing_support,
+    placing_load,
+    optimizing
+};
+
 struct Application
 {
     Analysis_state analysis;
+    State state;
     Unique_resource<Stateless, GLFW_deleter> glfw_context;
     Unique_resource<GLFWwindow *, Window_deleter> window;
     Unique_resource<Stateless, ImGui_deleter> imgui_context;
     Unique_resource<Stateless, ImGui_glfw_deleter> imgui_glfw_context;
     Unique_resource<Stateless, ImGui_opengl_deleter> imgui_opengl_context;
-    Window_state window_state;
+    float scale_x;
+    float scale_y;
+    int framebuffer_width;
+    int framebuffer_height;
+    Viewport viewport;
     std::vector<Line> lines;
     std::vector<Circle> circles;
     Raster_geometry raster_geometry;
@@ -225,6 +236,9 @@ struct Application
     Unique_resource<GLuint, GL_array_deleter> ibo {};
     Unique_resource<GLuint, GL_deleter> line_program {};
     Unique_resource<GLuint, GL_deleter> circle_program {};
+    static constexpr vec2 world_center {0.0f, 0.0f};
+    static constexpr vec2 world_size {2.0f, 2.0f};
+    static constexpr Rectangle play_button {0.85f, 0.0f, 0.1f, 0.1f};
 };
 
 template <std::invocable C, std::invocable<GLuint> D>
@@ -248,31 +262,113 @@ template <std::invocable<GLsizei, GLuint *> C,
     return Unique_resource(object, GL_array_deleter {destroy});
 }
 
+[[nodiscard]] constexpr float screen_to_world(float x,
+                                              int screen_min,
+                                              int screen_size,
+                                              float world_center,
+                                              float world_size) noexcept
+{
+    const auto u =
+        (x - static_cast<float>(screen_min)) / static_cast<float>(screen_size);
+    return world_center + (u - 0.5f) * world_size;
+}
+
+[[nodiscard]] constexpr Viewport centered_viewport(
+    float aspect_ratio, int available_width, int available_height) noexcept
+{
+    const auto available_aspect_ratio = static_cast<float>(available_width) /
+                                        static_cast<float>(available_height);
+    if (aspect_ratio > available_aspect_ratio)
+    {
+        const auto height = static_cast<int>(
+            static_cast<float>(available_width) / aspect_ratio);
+        return {0, (available_height - height) / 2, available_width, height};
+    }
+    else
+    {
+        const auto width = static_cast<int>(
+            static_cast<float>(available_height) * aspect_ratio);
+        return {(available_width - width) / 2, 0, width, available_height};
+    }
+}
+
+[[nodiscard]] constexpr bool
+is_in_rectangle(const vec2 &point, const Rectangle &rectangle) noexcept
+{
+    return point.x >= rectangle.pos.x &&
+           point.x <= rectangle.pos.x + rectangle.size.x &&
+           point.y >= rectangle.pos.y &&
+           point.y <= rectangle.pos.y + rectangle.size.y;
+}
+
 void glfw_error_callback(int error, const char *description)
 {
     std::cerr << "GLFW error " << error << ": " << description << '\n';
+}
+
+void glfw_mouse_button_callback(GLFWwindow *window,
+                                int button,
+                                int action,
+                                [[maybe_unused]] int mods)
+{
+    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS)
+    {
+        auto *const app =
+            static_cast<Application *>(glfwGetWindowUserPointer(window));
+        assert(app != nullptr);
+
+        double mouse_x {};
+        double mouse_y {};
+        glfwGetCursorPos(app->window.get(), &mouse_x, &mouse_y);
+        const auto mouse_world_x =
+            screen_to_world(static_cast<float>(mouse_x) * app->scale_x,
+                            app->viewport.x,
+                            app->viewport.width,
+                            app->world_center.x,
+                            app->world_size.x);
+        const auto mouse_world_y =
+            screen_to_world(static_cast<float>(mouse_y) * app->scale_y,
+                            app->viewport.y + app->viewport.height,
+                            -app->viewport.height,
+                            app->world_center.y,
+                            app->world_size.y);
+        const vec2 mouse_pos {mouse_world_x, mouse_world_y};
+
+        if (is_in_rectangle(mouse_pos, app->play_button))
+        {
+            if (app->state == State::idle)
+            {
+                app->state = State::optimizing;
+            }
+            else if (app->state == State::optimizing)
+            {
+                app->state = State::idle;
+            }
+        }
+    }
 }
 
 void glfw_window_content_scale_callback(GLFWwindow *window,
                                         float xscale,
                                         float yscale)
 {
-    auto *const window_state =
-        static_cast<Window_state *>(glfwGetWindowUserPointer(window));
-    assert(window_state != nullptr);
+    auto *const app =
+        static_cast<Application *>(glfwGetWindowUserPointer(window));
+    assert(app != nullptr);
 
-    window_state->scale_x = xscale;
-    window_state->scale_y = yscale;
+    app->scale_x = xscale;
+    app->scale_y = yscale;
 }
 
 void glfw_framebuffer_size_callback(GLFWwindow *window, int width, int height)
 {
-    auto *const window_state =
-        static_cast<Window_state *>(glfwGetWindowUserPointer(window));
-    assert(window_state != nullptr);
+    auto *const app =
+        static_cast<Application *>(glfwGetWindowUserPointer(window));
+    assert(app != nullptr);
 
-    window_state->framebuffer_width = width;
-    window_state->framebuffer_height = height;
+    app->framebuffer_width = width;
+    app->framebuffer_height = height;
+    app->viewport = centered_viewport(1.0f, width, height);
 }
 
 void load_gl_functions()
@@ -639,36 +735,6 @@ void create_raster_geometry(const std::vector<Line> &lines,
         geometry.indices.size() - geometry.circle_indices_offset;
 }
 
-[[nodiscard]] constexpr Viewport centered_viewport(
-    float aspect_ratio, int available_width, int available_height) noexcept
-{
-    const auto available_aspect_ratio = static_cast<float>(available_width) /
-                                        static_cast<float>(available_height);
-    if (aspect_ratio > available_aspect_ratio)
-    {
-        const auto height = static_cast<int>(
-            static_cast<float>(available_width) / aspect_ratio);
-        return {0, (available_height - height) / 2, available_width, height};
-    }
-    else
-    {
-        const auto width = static_cast<int>(
-            static_cast<float>(available_height) * aspect_ratio);
-        return {(available_width - width) / 2, 0, width, available_height};
-    }
-}
-
-[[nodiscard]] constexpr float screen_to_world(float x,
-                                              int screen_min,
-                                              int screen_size,
-                                              float world_center,
-                                              float world_size) noexcept
-{
-    const auto u =
-        (x - static_cast<float>(screen_min)) / static_cast<float>(screen_size);
-    return world_center + (u - 0.5f) * world_size;
-}
-
 [[nodiscard]] Application init_application()
 {
     Application app {};
@@ -709,17 +775,19 @@ void create_raster_geometry(const std::vector<Line> &lines,
 
     glfwMakeContextCurrent(app.window.get());
 
-    glfwSetWindowUserPointer(app.window.get(), &app.window_state);
+    glfwSetWindowUserPointer(app.window.get(), &app);
 
+    glfwSetMouseButtonCallback(app.window.get(), &glfw_mouse_button_callback);
     glfwSetWindowContentScaleCallback(app.window.get(),
                                       &glfw_window_content_scale_callback);
     glfwSetFramebufferSizeCallback(app.window.get(),
                                    &glfw_framebuffer_size_callback);
-    glfwGetWindowContentScale(
-        app.window.get(), &app.window_state.scale_x, &app.window_state.scale_y);
-    glfwGetFramebufferSize(app.window.get(),
-                           &app.window_state.framebuffer_width,
-                           &app.window_state.framebuffer_height);
+
+    glfwGetWindowContentScale(app.window.get(), &app.scale_x, &app.scale_y);
+    glfwGetFramebufferSize(
+        app.window.get(), &app.framebuffer_width, &app.framebuffer_height);
+    app.viewport =
+        centered_viewport(1.0f, app.framebuffer_width, app.framebuffer_height);
 
     glfwSwapInterval(1);
 
@@ -759,8 +827,8 @@ void create_raster_geometry(const std::vector<Line> &lines,
 
     constexpr std::uint32_t num_nodes {121};
     std::minstd_rand rng(17657575);
-    std::uniform_real_distribution<float> x(-1.0f, 1.0f);
-    std::uniform_real_distribution<float> y(-1.0f, 1.0f);
+    std::uniform_real_distribution<float> x(-0.8f, 0.8f);
+    std::uniform_real_distribution<float> y(-0.8f, 0.8f);
     for (std::uint32_t i {0}; i < num_nodes; ++i)
     {
         app.analysis.nodes.push_back({x(rng), y(rng)});
@@ -780,34 +848,14 @@ void create_raster_geometry(const std::vector<Line> &lines,
     app.analysis.loads.setZero(app.analysis.free_dofs.size());
     app.analysis.loads(num_nodes * 2 - 1 - 4) = -1.0f;
 
-    app.lines.clear();
-    for (const auto [i, j] : app.analysis.elements)
-    {
-        app.lines.push_back({.a = app.analysis.nodes[i],
-                             .b = app.analysis.nodes[j],
-                             .color = {0.75f, 0.75f, 0.75f}});
-    }
-    app.circles.clear();
-    for (const auto &node : app.analysis.nodes)
-    {
-        app.circles.push_back(
-            {.center = node, .radius = 0.02f, .color = {0.75f, 0.25f, 0.25f}});
-    }
-    create_raster_geometry(app.lines, app.circles, 0.03f, app.raster_geometry);
-
-    // TODO: we should probably organize the raster geometry better. We need to
-    // clarify the distinction between updating the vertex buffer (when moving
-    // objects) and re-creating the vertex and index buffers with a new size
-    // (when adding or removing objects).
-    std::tie(app.vao, app.vbo, app.ibo) =
-        create_vertex_index_buffers(app.raster_geometry);
-
     app.line_program = create_program(
         glsl_version, vertex_shader_code, line_fragment_shader_code);
     app.circle_program = create_program(
         glsl_version, vertex_shader_code, circle_fragment_shader_code);
 
-    create_font_texture();
+    // create_font_texture();
+
+    app.state = State::idle;
 
     return app;
 }
@@ -839,31 +887,19 @@ void main_loop_update(Application &app)
 {
     glfwPollEvents();
 
-    const auto viewport =
-        centered_viewport(1.0f,
-                          app.window_state.framebuffer_width,
-                          app.window_state.framebuffer_height);
+    static unsigned int step {0};
+    const auto scale_factor =
+        400000.0f * std::sin(2.0f * std::numbers::pi_v<float> / 60.0f *
+                             static_cast<float>(step));
+    if (app.state == State::optimizing)
+    {
+        ++step;
+    }
 
-    double mouse_x {};
-    double mouse_y {};
-    glfwGetCursorPos(app.window.get(), &mouse_x, &mouse_y);
-    const auto mouse_world_x =
-        screen_to_world(static_cast<float>(mouse_x) * app.window_state.scale_x,
-                        viewport.x,
-                        viewport.width,
-                        0.0f,
-                        2.0f);
-    const auto mouse_world_y =
-        screen_to_world(static_cast<float>(mouse_y) * app.window_state.scale_y,
-                        viewport.y + viewport.height,
-                        -viewport.height,
-                        0.0f,
-                        2.0f);
-
-    static float scale_factor {};
     assemble(app.analysis);
     const auto analysis_result = solve(app.analysis);
 
+    constexpr vec3 color {0.75f, 0.75f, 0.75f};
     app.lines.clear();
     for (std::size_t e {0}; e < app.analysis.elements.size(); ++e)
     {
@@ -876,7 +912,45 @@ void main_loop_update(Application &app)
                            analysis_result.displacements(2 * j + 1)};
         app.lines.push_back({.a = node_i + scale_factor * disp_i,
                              .b = node_j + scale_factor * disp_j,
-                             .color = {0.75f, 0.75f, 0.75f}});
+                             .color = color});
+    }
+    for (const auto &rectangle : {app.play_button})
+    {
+        const auto p0 = rectangle.pos;
+        const auto p1 = rectangle.pos + vec2 {rectangle.size.x, 0.0f};
+        const auto p2 = rectangle.pos + rectangle.size;
+        const auto p3 = rectangle.pos + vec2 {0.0f, rectangle.size.y};
+        app.lines.emplace_back(p0, p1, color);
+        app.lines.emplace_back(p1, p2, color);
+        app.lines.emplace_back(p2, p3, color);
+        app.lines.emplace_back(p3, p0, color);
+    }
+    if (app.state == State::optimizing)
+    {
+        const auto p0 =
+            app.play_button.pos + app.play_button.size * vec2 {0.2f, 0.2f};
+        const auto p1 =
+            app.play_button.pos + app.play_button.size * vec2 {0.8f, 0.2f};
+        const auto p2 =
+            app.play_button.pos + app.play_button.size * vec2 {0.8f, 0.8f};
+        const auto p3 =
+            app.play_button.pos + app.play_button.size * vec2 {0.2f, 0.8f};
+        app.lines.emplace_back(p0, p1, color);
+        app.lines.emplace_back(p1, p2, color);
+        app.lines.emplace_back(p2, p3, color);
+        app.lines.emplace_back(p3, p0, color);
+    }
+    else
+    {
+        const auto p0 =
+            app.play_button.pos + app.play_button.size * vec2 {0.7f, 0.5f};
+        const auto p1 =
+            app.play_button.pos + app.play_button.size * vec2 {0.3f, 0.8f};
+        const auto p2 =
+            app.play_button.pos + app.play_button.size * vec2 {0.3f, 0.2f};
+        app.lines.emplace_back(p0, p1, color);
+        app.lines.emplace_back(p1, p2, color);
+        app.lines.emplace_back(p2, p0, color);
     }
     app.circles.clear();
     for (std::size_t i {0}; i < app.analysis.nodes.size(); ++i)
@@ -889,7 +963,8 @@ void main_loop_update(Application &app)
                                .color = {0.75f, 0.25f, 0.25f}});
     }
     create_raster_geometry(app.lines, app.circles, 0.02f, app.raster_geometry);
-    update_vertex_buffer(app.vao.get(), app.vbo.get(), app.raster_geometry);
+    std::tie(app.vao, app.vbo, app.ibo) =
+        create_vertex_index_buffers(app.raster_geometry);
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
@@ -900,13 +975,15 @@ void main_loop_update(Application &app)
         ImGui::Text("%.2f ms/frame, %.2f fps",
                     static_cast<double>(1000.0f / ImGui::GetIO().Framerate),
                     static_cast<double>(ImGui::GetIO().Framerate));
-        ImGui::SliderFloat("Deformation scale", &scale_factor, 0.0f, 500000.0f);
     }
     ImGui::End();
 
     ImGui::Render();
 
-    glViewport(viewport.x, viewport.y, viewport.width, viewport.height);
+    glViewport(app.viewport.x,
+               app.viewport.y,
+               app.viewport.width,
+               app.viewport.height);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     draw_geometry(app);
