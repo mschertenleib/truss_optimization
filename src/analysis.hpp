@@ -19,16 +19,17 @@ struct Analysis_state
 {
     std::vector<vec2> nodes;
     std::vector<Element> elements;
-    std::vector<float> activations;
+    Eigen::VectorXf activations;
     std::vector<float> stiffness_constants;
     std::vector<vec2> element_directions;
+    Eigen::VectorXf lengths;
     std::vector<std::uint32_t> fixed_dofs;
     std::vector<std::uint32_t> free_dofs;
     Eigen::SparseMatrix<float> stiffness_matrix;
     Eigen::VectorXf loads;
     Eigen::VectorXf displacements;
-    std::vector<float> axial_forces;
-    std::vector<float> energies;
+    Eigen::VectorXf axial_forces;
+    Eigen::VectorXf energies;
 };
 
 void setup_optimization(const std::vector<vec2> &fixed_nodes,

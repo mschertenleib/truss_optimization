@@ -13,6 +13,11 @@
 namespace
 {
 
+constexpr float young_modulus {200e9f};
+constexpr float area {0.000025f};
+constexpr float min_activation {1e-3f};
+constexpr float max_length {8.0f};
+
 [[nodiscard]] constexpr const char *
 to_string(Eigen::ComputationInfo computation_info) noexcept
 {
@@ -28,9 +33,6 @@ to_string(Eigen::ComputationInfo computation_info) noexcept
 
 void assemble(Analysis_state &state)
 {
-    constexpr float young_modulus {200e9f};
-    constexpr float area {0.000025f};
-
     const auto num_dofs = state.nodes.size() * 2;
     const auto num_free_dofs = num_dofs - state.fixed_dofs.size();
 
@@ -54,6 +56,7 @@ void assemble(Analysis_state &state)
 
     std::vector<Eigen::Triplet<float>> triplets;
 
+    state.lengths.resize(state.elements.size());
     state.stiffness_constants.resize(state.elements.size());
     state.element_directions.resize(state.elements.size());
 
@@ -67,6 +70,7 @@ void assemble(Analysis_state &state)
 
         const auto vec = state.nodes[node_j] - state.nodes[node_i];
         const auto length = norm(vec);
+        state.lengths[element_index] = length;
         const auto dir = vec / length;
         state.element_directions[element_index] = dir;
         const auto EA_over_L = activation * (young_modulus * area) / length;
@@ -132,8 +136,17 @@ void solve_equilibrium_system(Analysis_state &state)
     state.displacements.setZero(num_dofs);
     state.displacements(state.free_dofs) = free_displacements;
 
-    state.axial_forces = state.stiffness_constants;
-    state.energies = state.stiffness_constants;
+    state.axial_forces.resize(
+        static_cast<Eigen::Index>(state.stiffness_constants.size()));
+    state.energies.resize(
+        static_cast<Eigen::Index>(state.stiffness_constants.size()));
+    for (std::size_t i {0}; i < state.stiffness_constants.size(); ++i)
+    {
+        state.axial_forces[static_cast<Eigen::Index>(i)] =
+            state.stiffness_constants[i];
+        state.energies[static_cast<Eigen::Index>(i)] =
+            state.stiffness_constants[i];
+    }
     for (std::size_t element_index {0}; element_index < state.elements.size();
          ++element_index)
     {
@@ -144,8 +157,9 @@ void solve_equilibrium_system(Analysis_state &state)
                 state.displacements(2 * node_i + 1)};
         const auto axial_extension =
             dot(state.element_directions[element_index], relative_displacement);
-        state.axial_forces[element_index] *= axial_extension;
-        state.energies[element_index] *=
+        state.axial_forces[static_cast<Eigen::Index>(element_index)] *=
+            axial_extension;
+        state.energies[static_cast<Eigen::Index>(element_index)] *=
             0.5f * axial_extension * axial_extension;
     }
 }
@@ -175,6 +189,16 @@ void make_triangulation(Analysis_state &state)
     }
 }
 
+void equal_stress_projection(Analysis_state &state)
+{
+    const auto equal_stress =
+        state.lengths.cwiseProduct(state.axial_forces.cwiseAbs()).sum() *
+        (1.0f / (area * max_length));
+    state.activations = (state.axial_forces.cwiseAbs() / (equal_stress * area))
+                            .cwiseMax(min_activation)
+                            .cwiseMin(1.0f);
+}
+
 } // namespace
 
 void setup_optimization(const std::vector<vec2> &fixed_nodes,
@@ -186,9 +210,6 @@ void setup_optimization(const std::vector<vec2> &fixed_nodes,
     state.nodes.insert(
         state.nodes.cbegin(), fixed_nodes.cbegin(), fixed_nodes.cend());
     state.nodes.push_back(load_node);
-    for (auto node : state.nodes)
-        std::cout << node.x << ' ' << node.y << '\n';
-    std::cout << '\n';
 
     constexpr std::uint32_t num_free_nodes {100};
     std::minstd_rand rng(17657575);
@@ -216,20 +237,21 @@ void setup_optimization(const std::vector<vec2> &fixed_nodes,
     state.loads(0) = load_vector.x;
     state.loads(1) = load_vector.y;
 
-    // 1) Equilibrium system
+    // Solve linear elasticity equilibrium system
     assemble(state);
     solve_equilibrium_system(state);
 }
 
 void optimization_step(Analysis_state &state)
 {
-    // 2) Topology step
+    // Sizing step (size edges)
+    equal_stress_projection(state);
 
-    // 3) Geometry step
+    // Geometry step (move nodes)
 
-    // 4) Triangulation
+    // Add/remove nodes and re-triangulate
 
-    // 1) Equilibrium system
+    // Solve linear elasticity equilibrium system
     assemble(state);
     solve_equilibrium_system(state);
 }

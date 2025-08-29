@@ -843,7 +843,6 @@ void main_loop_update(Application &app)
     const auto scale_factor =
         400000.0f * std::sin(2.0f * std::numbers::pi_v<float> / 60.0f *
                              static_cast<float>(app.step));
-    constexpr vec3 color {0.75f, 0.75f, 0.75f};
     app.lines.clear();
     for (std::size_t e {0}; e < app.analysis.elements.size(); ++e)
     {
@@ -854,10 +853,15 @@ void main_loop_update(Application &app)
         const auto node_j = app.analysis.nodes[j];
         const vec2 disp_j {app.analysis.displacements(2 * j),
                            app.analysis.displacements(2 * j + 1)};
+        const vec3 color {
+            app.analysis.activations[static_cast<Eigen::Index>(e)],
+            app.analysis.activations[static_cast<Eigen::Index>(e)],
+            app.analysis.activations[static_cast<Eigen::Index>(e)]};
         app.lines.push_back({.a = node_i + scale_factor * disp_i,
                              .b = node_j + scale_factor * disp_j,
                              .color = color});
     }
+    constexpr vec3 color {0.75f, 0.75f, 0.75f};
     for (const auto &rectangle : {app.play_button, app.restart_button})
     {
         const auto p0 = rectangle.pos;
