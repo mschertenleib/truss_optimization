@@ -3,14 +3,14 @@ cmake_minimum_required(VERSION 3.19)
 project(olc_code_jam LANGUAGES CXX)
 
 
-set(TARGET_WEB OFF)
 if(${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
     set(TARGET_WEB ON)
+else()
+    set(TARGET_WEB OFF)
 endif()
 
 
 set(CPM_DOWNLOAD_VERSION 0.38.2)
-
 if (CPM_SOURCE_CACHE)
     set(CPM_DOWNLOAD_LOCATION "${CPM_SOURCE_CACHE}/cpm/CPM_${CPM_DOWNLOAD_VERSION}.cmake")
 elseif (DEFINED ENV{CPM_SOURCE_CACHE})
@@ -18,7 +18,6 @@ elseif (DEFINED ENV{CPM_SOURCE_CACHE})
 else ()
     set(CPM_DOWNLOAD_LOCATION "${CMAKE_BINARY_DIR}/cmake/CPM_${CPM_DOWNLOAD_VERSION}.cmake")
 endif ()
-
 if (NOT (EXISTS ${CPM_DOWNLOAD_LOCATION}))
     message(STATUS "Downloading CPM.cmake to ${CPM_DOWNLOAD_LOCATION}")
     file(DOWNLOAD
@@ -26,7 +25,6 @@ if (NOT (EXISTS ${CPM_DOWNLOAD_LOCATION}))
         ${CPM_DOWNLOAD_LOCATION}
     )
 endif ()
-
 include(${CPM_DOWNLOAD_LOCATION})
 
 
@@ -63,29 +61,6 @@ if (NOT TARGET_WEB)
     )
 endif ()
 
-CPMAddPackage(
-    GITHUB_REPOSITORY ocornut/imgui
-    GIT_TAG v1.91.9
-    DOWNLOAD_ONLY YES
-)
-add_library(imgui STATIC)
-target_sources(imgui PRIVATE
-    ${imgui_SOURCE_DIR}/imgui.cpp
-    ${imgui_SOURCE_DIR}/imgui.h
-    ${imgui_SOURCE_DIR}/imgui_internal.h
-    ${imgui_SOURCE_DIR}/imgui_draw.cpp
-    ${imgui_SOURCE_DIR}/imgui_tables.cpp
-    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
-)
-target_include_directories(imgui SYSTEM PUBLIC
-    ${imgui_SOURCE_DIR}
-    ${imgui_SOURCE_DIR}/backends
-)
-target_link_libraries(imgui PRIVATE glfw)
-
-
 add_executable(${CMAKE_PROJECT_NAME})
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     src/main.cpp
@@ -100,7 +75,6 @@ target_include_directories(${CMAKE_PROJECT_NAME} SYSTEM PRIVATE
     ${CDT_SOURCE_DIR}/CDT/include
 )
 target_compile_features(${CMAKE_PROJECT_NAME} PRIVATE cxx_std_23)
-target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE imgui)
 
 
 if (TARGET_WEB)
@@ -110,12 +84,13 @@ if (TARGET_WEB)
     target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
         -Os
         -sDISABLE_EXCEPTION_CATCHING=0
+        --use-port=contrib.glfw3
     )
     target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
         -Os
         -sWASM=1
         -sUSE_WEBGL2=1
-        -sUSE_GLFW=3
+        --use-port=contrib.glfw3
         -sFULL_ES3=1
         -sASSERTIONS=1
         -sDISABLE_EXCEPTION_CATCHING=0

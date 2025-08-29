@@ -11,15 +11,12 @@
 #include <emscripten.h>
 #define GLFW_INCLUDE_ES3
 #define GL_GLES_PROTOTYPES 0
+#include <GLFW/emscripten_glfw3.h>
 #else
 #define GLFW_INCLUDE_GLCOREARB
 #endif
 #define GLFW_INCLUDE_GLEXT
 #include <GLFW/glfw3.h>
-
-#include <imgui.h>
-#include <imgui_impl_glfw.h>
-#include <imgui_impl_opengl3.h>
 
 #include <algorithm>
 #include <cassert>
@@ -119,30 +116,6 @@ struct Window_deleter
     }
 };
 
-struct ImGui_deleter
-{
-    void operator()(Stateless)
-    {
-        ImGui::DestroyContext();
-    }
-};
-
-struct ImGui_glfw_deleter
-{
-    void operator()(Stateless)
-    {
-        ImGui_ImplGlfw_Shutdown();
-    }
-};
-
-struct ImGui_opengl_deleter
-{
-    void operator()(Stateless)
-    {
-        ImGui_ImplOpenGL3_Shutdown();
-    }
-};
-
 struct GL_deleter
 {
     void (*destroy)(GLuint);
@@ -220,9 +193,6 @@ struct Application
     State state;
     Unique_resource<Stateless, GLFW_deleter> glfw_context;
     Unique_resource<GLFWwindow *, Window_deleter> window;
-    Unique_resource<Stateless, ImGui_deleter> imgui_context;
-    Unique_resource<Stateless, ImGui_glfw_deleter> imgui_glfw_context;
-    Unique_resource<Stateless, ImGui_opengl_deleter> imgui_opengl_context;
     float scale_x;
     float scale_y;
     int framebuffer_width;
@@ -799,28 +769,9 @@ void create_raster_geometry(const std::vector<Line> &lines,
     glDebugMessageCallback(&gl_debug_callback, nullptr);
 #endif
 
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    app.imgui_context.reset(Stateless {});
-
-    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    ImGui::StyleColorsDark();
-
-    if (!ImGui_ImplGlfw_InitForOpenGL(app.window.get(), true))
-    {
-        throw std::runtime_error("ImGui: failed to initialize GLFW backend");
-    }
-    app.imgui_glfw_context.reset(Stateless {});
-
 #ifdef __EMSCRIPTEN__
-    ImGui_ImplGlfw_InstallEmscriptenCallbacks(app.window.get(), "#canvas");
+    emscripten_glfw_make_canvas_resizable(app.window.get(), "window", nullptr);
 #endif
-
-    if (!ImGui_ImplOpenGL3_Init(glsl_version))
-    {
-        throw std::runtime_error("ImGui: failed to initialize OpenGL backend");
-    }
-    app.imgui_opengl_context.reset(Stateless {});
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -966,20 +917,6 @@ void main_loop_update(Application &app)
     std::tie(app.vao, app.vbo, app.ibo) =
         create_vertex_index_buffers(app.raster_geometry);
 
-    ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
-    ImGui::NewFrame();
-
-    if (ImGui::Begin("Test"))
-    {
-        ImGui::Text("%.2f ms/frame, %.2f fps",
-                    static_cast<double>(1000.0f / ImGui::GetIO().Framerate),
-                    static_cast<double>(ImGui::GetIO().Framerate));
-    }
-    ImGui::End();
-
-    ImGui::Render();
-
     glViewport(app.viewport.x,
                app.viewport.y,
                app.viewport.width,
@@ -988,9 +925,9 @@ void main_loop_update(Application &app)
     glClear(GL_COLOR_BUFFER_BIT);
     draw_geometry(app);
 
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
+#ifndef __EMSCRIPTEN__
     glfwSwapBuffers(app.window.get());
+#endif
 }
 
 } // namespace
@@ -1006,8 +943,6 @@ void run_application()
     // duration.
 
     static auto app = init_application();
-
-    ImGui::GetIO().IniFilename = nullptr;
 
     emscripten_set_main_loop_arg(
         [](void *arg) { main_loop_update(*static_cast<Application *>(arg)); },
