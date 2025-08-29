@@ -7,6 +7,8 @@
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <numeric>
+#include <random>
 
 namespace
 {
@@ -23,8 +25,6 @@ to_string(Eigen::ComputationInfo computation_info) noexcept
     }
     return "UNDEFINED";
 }
-
-} // namespace
 
 void assemble(Analysis_state &state)
 {
@@ -105,7 +105,7 @@ void assemble(Analysis_state &state)
     state.stiffness_matrix.prune(0.0f);
 }
 
-Linear_system_result solve(const Analysis_state &state)
+void solve_equilibrium_system(Analysis_state &state)
 {
     Eigen::SimplicialLDLT<Eigen::SparseMatrix<float>, Eigen::Lower> solver;
     solver.compute(state.stiffness_matrix);
@@ -129,28 +129,25 @@ Linear_system_result solve(const Analysis_state &state)
         throw std::runtime_error(message.str());
     }
 
-    Linear_system_result result {};
-    result.displacements.setZero(num_dofs);
-    result.displacements(state.free_dofs) = free_displacements;
+    state.displacements.setZero(num_dofs);
+    state.displacements(state.free_dofs) = free_displacements;
 
-    result.axial_forces = state.stiffness_constants;
-    result.energies = state.stiffness_constants;
+    state.axial_forces = state.stiffness_constants;
+    state.energies = state.stiffness_constants;
     for (std::size_t element_index {0}; element_index < state.elements.size();
          ++element_index)
     {
         const auto [node_i, node_j] = state.elements[element_index];
         const vec2 relative_displacement {
-            result.displacements(2 * node_j) - result.displacements(2 * node_i),
-            result.displacements(2 * node_j + 1) -
-                result.displacements(2 * node_i + 1)};
+            state.displacements(2 * node_j) - state.displacements(2 * node_i),
+            state.displacements(2 * node_j + 1) -
+                state.displacements(2 * node_i + 1)};
         const auto axial_extension =
             dot(state.element_directions[element_index], relative_displacement);
-        result.axial_forces[element_index] *= axial_extension;
-        result.energies[element_index] *=
+        state.axial_forces[element_index] *= axial_extension;
+        state.energies[element_index] *=
             0.5f * axial_extension * axial_extension;
     }
-
-    return result;
 }
 
 void make_triangulation(Analysis_state &state)
@@ -169,10 +166,70 @@ void make_triangulation(Analysis_state &state)
 
     // FIXME: `edges` is identical to `elements`, just a different type
     const auto edges = CDT::extractEdgesFromTriangles(cdt.triangles);
+    state.elements.clear();
     state.elements.reserve(edges.size());
     for (const auto &edge : edges)
     {
         const auto [i, j] = edge.verts();
         state.elements.emplace_back(i, j);
     }
+}
+
+} // namespace
+
+void setup_optimization(const std::vector<vec2> &fixed_nodes,
+                        const vec2 &load_node,
+                        const vec2 &load_vector,
+                        Analysis_state &state)
+{
+    state.nodes.clear();
+    state.nodes.insert(
+        state.nodes.cbegin(), fixed_nodes.cbegin(), fixed_nodes.cend());
+    state.nodes.push_back(load_node);
+    for (auto node : state.nodes)
+        std::cout << node.x << ' ' << node.y << '\n';
+    std::cout << '\n';
+
+    constexpr std::uint32_t num_free_nodes {100};
+    std::minstd_rand rng(17657575);
+    std::uniform_real_distribution<float> x(-0.8f, 0.8f);
+    std::uniform_real_distribution<float> y(-0.8f, 0.8f);
+    for (std::uint32_t i {0}; i < num_free_nodes; ++i)
+    {
+        state.nodes.push_back({x(rng), y(rng)});
+    }
+
+    make_triangulation(state);
+
+    state.activations.resize(state.elements.size());
+    std::fill(state.activations.begin(), state.activations.end(), 1.0f);
+
+    state.fixed_dofs.resize(fixed_nodes.size() * 2);
+    std::iota(state.fixed_dofs.begin(), state.fixed_dofs.end(), 0);
+
+    state.free_dofs.resize(2 + num_free_nodes * 2);
+    std::iota(state.free_dofs.begin(),
+              state.free_dofs.end(),
+              state.fixed_dofs.size());
+
+    state.loads.setZero(static_cast<Eigen::Index>(state.free_dofs.size()));
+    state.loads(0) = load_vector.x;
+    state.loads(1) = load_vector.y;
+
+    // 1) Equilibrium system
+    assemble(state);
+    solve_equilibrium_system(state);
+}
+
+void optimization_step(Analysis_state &state)
+{
+    // 2) Topology step
+
+    // 3) Geometry step
+
+    // 4) Triangulation
+
+    // 1) Equilibrium system
+    assemble(state);
+    solve_equilibrium_system(state);
 }

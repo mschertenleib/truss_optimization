@@ -184,12 +184,13 @@ enum struct State
     idle,
     placing_support,
     placing_load,
-    optimizing
+    running
 };
 
 struct Application
 {
     Analysis_state analysis;
+    unsigned int step;
     State state;
     Unique_resource<Stateless, GLFW_deleter> glfw_context;
     Unique_resource<GLFWwindow *, Window_deleter> window;
@@ -208,7 +209,8 @@ struct Application
     Unique_resource<GLuint, GL_deleter> circle_program {};
     static constexpr vec2 world_center {0.0f, 0.0f};
     static constexpr vec2 world_size {2.0f, 2.0f};
-    static constexpr Rectangle play_button {0.85f, 0.0f, 0.1f, 0.1f};
+    static constexpr Rectangle play_button {0.85f, 0.15f, 0.1f, 0.1f};
+    static constexpr Rectangle restart_button {0.85f, 0.0f, 0.1f, 0.1f};
 };
 
 template <std::invocable C, std::invocable<GLuint> D>
@@ -308,12 +310,16 @@ void glfw_mouse_button_callback(GLFWwindow *window,
         {
             if (app->state == State::idle)
             {
-                app->state = State::optimizing;
+                app->state = State::running;
             }
-            else if (app->state == State::optimizing)
+            else if (app->state == State::running)
             {
                 app->state = State::idle;
             }
+        }
+        else if (is_in_rectangle(mouse_pos, app->restart_button))
+        {
+            app->step = 0;
         }
     }
 }
@@ -399,14 +405,22 @@ create_shader(GLenum type, std::size_t size, const char *const code[])
                                   const char *fragment_shader_code)
 {
     std::vector<const char *> shader_code;
-    shader_code.reserve(3);
-    shader_code.push_back(glsl_version);
-    shader_code.push_back("\n");
+
     if (std::string_view(glsl_version).ends_with("es"))
     {
+        shader_code.reserve(4);
+        shader_code.push_back(glsl_version);
+        shader_code.push_back("\n");
         shader_code.push_back("precision highp float;\n");
+        shader_code.push_back(vertex_shader_code);
     }
-    shader_code.push_back(vertex_shader_code);
+    else
+    {
+        shader_code.reserve(3);
+        shader_code.push_back(glsl_version);
+        shader_code.push_back("\n");
+        shader_code.push_back(vertex_shader_code);
+    }
     const auto vertex_shader =
         create_shader(GL_VERTEX_SHADER, shader_code.size(), shader_code.data());
 
@@ -776,29 +790,6 @@ void create_raster_geometry(const std::vector<Line> &lines,
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    constexpr std::uint32_t num_nodes {121};
-    std::minstd_rand rng(17657575);
-    std::uniform_real_distribution<float> x(-0.8f, 0.8f);
-    std::uniform_real_distribution<float> y(-0.8f, 0.8f);
-    for (std::uint32_t i {0}; i < num_nodes; ++i)
-    {
-        app.analysis.nodes.push_back({x(rng), y(rng)});
-    }
-    make_triangulation(app.analysis);
-
-    app.analysis.activations.resize(app.analysis.elements.size());
-    for (auto &activation : app.analysis.activations)
-    {
-        activation = 1.0f;
-    }
-    app.analysis.fixed_dofs = {0, 1, 2, 3};
-    for (std::uint32_t i {4}; i < num_nodes * 2; ++i)
-    {
-        app.analysis.free_dofs.push_back(i);
-    }
-    app.analysis.loads.setZero(app.analysis.free_dofs.size());
-    app.analysis.loads(num_nodes * 2 - 1 - 4) = -1.0f;
-
     app.line_program = create_program(
         glsl_version, vertex_shader_code, line_fragment_shader_code);
     app.circle_program = create_program(
@@ -807,6 +798,11 @@ void create_raster_geometry(const std::vector<Line> &lines,
     // create_font_texture();
 
     app.state = State::idle;
+
+    const std::vector<vec2> fixed_nodes {{-0.8f, 0.4f}, {-0.8f, -0.4f}};
+    const vec2 load_node {0.8f, -0.2f};
+    const vec2 load_vector {0.0f, -1.0f};
+    setup_optimization(fixed_nodes, load_node, load_vector, app.analysis);
 
     return app;
 }
@@ -838,34 +834,31 @@ void main_loop_update(Application &app)
 {
     glfwPollEvents();
 
-    static unsigned int step {0};
-    const auto scale_factor =
-        400000.0f * std::sin(2.0f * std::numbers::pi_v<float> / 60.0f *
-                             static_cast<float>(step));
-    if (app.state == State::optimizing)
+    if (app.state == State::running)
     {
-        ++step;
+        optimization_step(app.analysis);
+        ++app.step;
     }
 
-    assemble(app.analysis);
-    const auto analysis_result = solve(app.analysis);
-
+    const auto scale_factor =
+        400000.0f * std::sin(2.0f * std::numbers::pi_v<float> / 60.0f *
+                             static_cast<float>(app.step));
     constexpr vec3 color {0.75f, 0.75f, 0.75f};
     app.lines.clear();
     for (std::size_t e {0}; e < app.analysis.elements.size(); ++e)
     {
         const auto [i, j] = app.analysis.elements[e];
         const auto node_i = app.analysis.nodes[i];
-        const vec2 disp_i {analysis_result.displacements(2 * i),
-                           analysis_result.displacements(2 * i + 1)};
+        const vec2 disp_i {app.analysis.displacements(2 * i),
+                           app.analysis.displacements(2 * i + 1)};
         const auto node_j = app.analysis.nodes[j];
-        const vec2 disp_j {analysis_result.displacements(2 * j),
-                           analysis_result.displacements(2 * j + 1)};
+        const vec2 disp_j {app.analysis.displacements(2 * j),
+                           app.analysis.displacements(2 * j + 1)};
         app.lines.push_back({.a = node_i + scale_factor * disp_i,
                              .b = node_j + scale_factor * disp_j,
                              .color = color});
     }
-    for (const auto &rectangle : {app.play_button})
+    for (const auto &rectangle : {app.play_button, app.restart_button})
     {
         const auto p0 = rectangle.pos;
         const auto p1 = rectangle.pos + vec2 {rectangle.size.x, 0.0f};
@@ -876,20 +869,18 @@ void main_loop_update(Application &app)
         app.lines.emplace_back(p2, p3, color);
         app.lines.emplace_back(p3, p0, color);
     }
-    if (app.state == State::optimizing)
+    if (app.state == State::running)
     {
         const auto p0 =
-            app.play_button.pos + app.play_button.size * vec2 {0.2f, 0.2f};
+            app.play_button.pos + app.play_button.size * vec2 {0.3f, 0.3f};
         const auto p1 =
-            app.play_button.pos + app.play_button.size * vec2 {0.8f, 0.2f};
+            app.play_button.pos + app.play_button.size * vec2 {0.3f, 0.7f};
         const auto p2 =
-            app.play_button.pos + app.play_button.size * vec2 {0.8f, 0.8f};
+            app.play_button.pos + app.play_button.size * vec2 {0.7f, 0.3f};
         const auto p3 =
-            app.play_button.pos + app.play_button.size * vec2 {0.2f, 0.8f};
+            app.play_button.pos + app.play_button.size * vec2 {0.7f, 0.7f};
         app.lines.emplace_back(p0, p1, color);
-        app.lines.emplace_back(p1, p2, color);
         app.lines.emplace_back(p2, p3, color);
-        app.lines.emplace_back(p3, p0, color);
     }
     else
     {
@@ -907,8 +898,8 @@ void main_loop_update(Application &app)
     for (std::size_t i {0}; i < app.analysis.nodes.size(); ++i)
     {
         const auto &node = app.analysis.nodes[i];
-        const vec2 disp {analysis_result.displacements(2 * i),
-                         analysis_result.displacements(2 * i + 1)};
+        const vec2 disp {app.analysis.displacements(2 * i),
+                         app.analysis.displacements(2 * i + 1)};
         app.circles.push_back({.center = node + scale_factor * disp,
                                .radius = 0.02f,
                                .color = {0.75f, 0.25f, 0.25f}});
