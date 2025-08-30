@@ -199,6 +199,27 @@ void equal_stress_projection(Analysis_state &state)
                             .cwiseMin(1.0f);
 }
 
+void geometry_step(Analysis_state &state)
+{
+    // FIXME: this has to be for free nodes only
+    std::vector<vec2> gradients(state.nodes.size());
+    for (std::size_t e {0}; e < state.elements.size(); ++e)
+    {
+        const auto gradient_contrib =
+            2.0f * state.energies[static_cast<Eigen::Index>(e)] /
+            state.lengths[static_cast<Eigen::Index>(e)] *
+            state.element_directions[e];
+        const auto [i, j] = state.elements[e];
+        gradients[i] -= gradient_contrib;
+        gradients[j] += gradient_contrib;
+    }
+
+    for (const auto [x, y] : gradients)
+    {
+        std::cout << x << ' ' << y << '\n';
+    }
+}
+
 } // namespace
 
 void setup_optimization(const std::vector<vec2> &fixed_nodes,
@@ -248,6 +269,7 @@ void optimization_step(Analysis_state &state)
     equal_stress_projection(state);
 
     // Geometry step (move nodes)
+    geometry_step(state);
 
     // Add/remove nodes and re-triangulate
 
