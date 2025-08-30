@@ -320,6 +320,11 @@ void glfw_mouse_button_callback(GLFWwindow *window,
         else if (is_in_rectangle(mouse_pos, app->restart_button))
         {
             app->step = 0;
+            const std::vector<vec2> fixed_nodes {{-0.8f, 0.4f}, {-0.8f, -0.4f}};
+            const vec2 load_node {0.8f, -0.2f};
+            const vec2 load_vector {0.0f, -1.0f};
+            setup_optimization(
+                fixed_nodes, load_node, load_vector, app->analysis);
         }
     }
 }
@@ -840,26 +845,17 @@ void main_loop_update(Application &app)
         ++app.step;
     }
 
-    const auto scale_factor =
-        400000.0f * std::sin(2.0f * std::numbers::pi_v<float> / 60.0f *
-                             static_cast<float>(app.step));
     app.lines.clear();
     for (std::size_t e {0}; e < app.analysis.elements.size(); ++e)
     {
         const auto [i, j] = app.analysis.elements[e];
         const auto node_i = app.analysis.nodes[i];
-        const vec2 disp_i {app.analysis.displacements(2 * i),
-                           app.analysis.displacements(2 * i + 1)};
         const auto node_j = app.analysis.nodes[j];
-        const vec2 disp_j {app.analysis.displacements(2 * j),
-                           app.analysis.displacements(2 * j + 1)};
         const vec3 color {
             app.analysis.activations[static_cast<Eigen::Index>(e)],
             app.analysis.activations[static_cast<Eigen::Index>(e)],
             app.analysis.activations[static_cast<Eigen::Index>(e)]};
-        app.lines.push_back({.a = node_i + scale_factor * disp_i,
-                             .b = node_j + scale_factor * disp_j,
-                             .color = color});
+        app.lines.push_back({.a = node_i, .b = node_j, .color = color});
     }
     constexpr vec3 color {0.75f, 0.75f, 0.75f};
     for (const auto &rectangle : {app.play_button, app.restart_button})
@@ -901,10 +897,7 @@ void main_loop_update(Application &app)
     app.circles.clear();
     for (std::size_t i {0}; i < app.analysis.nodes.size(); ++i)
     {
-        const auto &node = app.analysis.nodes[i];
-        const vec2 disp {app.analysis.displacements(2 * i),
-                         app.analysis.displacements(2 * i + 1)};
-        app.circles.push_back({.center = node + scale_factor * disp,
+        app.circles.push_back({.center = app.analysis.nodes[i],
                                .radius = 0.02f,
                                .color = {0.75f, 0.25f, 0.25f}});
     }
