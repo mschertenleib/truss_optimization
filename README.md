@@ -1,1 +1,1 @@
-# olc_code_jam
+# Truss Optimization
