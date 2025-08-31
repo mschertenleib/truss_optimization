@@ -323,7 +323,7 @@ void glfw_mouse_button_callback(GLFWwindow *window,
             const std::vector<vec2> fixed_nodes {{-0.8f, 0.4f}, {-0.8f, -0.4f}};
             const vec2 load_node {0.8f, -0.2f};
             const vec2 load_vector {0.0f, -1.0f};
-            setup_optimization(
+            optimization_init(
                 fixed_nodes, load_node, load_vector, app->analysis);
         }
     }
@@ -603,9 +603,9 @@ void update_vertex_buffer(GLuint vao,
 
 void create_font_texture()
 {
-    const auto ttf = read_binary_file("font/B612Mono-Regular.ttf");
-    constexpr int atlas_width {512};
-    constexpr int atlas_height {512};
+    const auto ttf = read_binary_file("font/Roboto_Condensed-Regular.ttf");
+    constexpr int atlas_width {1024};
+    constexpr int atlas_height {1024};
     std::vector<std::uint8_t> pixels(atlas_width * atlas_height);
 
     stbtt_pack_context pc {};
@@ -753,9 +753,8 @@ void create_raster_geometry(const std::vector<Line> &lines,
 #endif
     glfwWindowHint(GLFW_SAMPLES, 0);
 
-    // FIXME: title
     auto *const window_ptr =
-        glfwCreateWindow(1280, 720, "OLC CodeJam 2025", nullptr, nullptr);
+        glfwCreateWindow(1280, 720, "Truss Optimization", nullptr, nullptr);
     if (window_ptr == nullptr)
     {
         throw std::runtime_error("Failed to create GLFW window");
@@ -807,7 +806,7 @@ void create_raster_geometry(const std::vector<Line> &lines,
     const std::vector<vec2> fixed_nodes {{-0.8f, 0.4f}, {-0.8f, -0.4f}};
     const vec2 load_node {0.8f, -0.2f};
     const vec2 load_vector {0.0f, -1.0f};
-    setup_optimization(fixed_nodes, load_node, load_vector, app.analysis);
+    optimization_init(fixed_nodes, load_node, load_vector, app.analysis);
 
     return app;
 }

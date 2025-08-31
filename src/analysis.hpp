@@ -32,10 +32,10 @@ struct Analysis_state
     Eigen::VectorXf energies;
 };
 
-void setup_optimization(const std::vector<vec2> &fixed_nodes,
-                        const vec2 &load_node,
-                        const vec2 &load_vector,
-                        Analysis_state &state);
+void optimization_init(const std::vector<vec2> &fixed_nodes,
+                       const vec2 &load_node,
+                       const vec2 &load_vector,
+                       Analysis_state &state);
 void optimization_step(Analysis_state &state);
 
 #endif

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.19)
 
-project(olc_code_jam LANGUAGES CXX)
+project(truss_optimization LANGUAGES CXX)
 
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
