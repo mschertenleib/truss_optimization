@@ -191,12 +191,11 @@ void make_triangulation(Analysis_state &state)
 
 void equal_stress_projection(Analysis_state &state)
 {
-    const auto equal_stress =
-        state.lengths.cwiseProduct(state.axial_forces.cwiseAbs()).sum() *
-        (1.0f / (area * max_length));
-    state.activations = (state.axial_forces.cwiseAbs() / (equal_stress * area))
-                            .cwiseMax(min_activation)
-                            .cwiseMin(1.0f);
+    state.activations =
+        (state.axial_forces.cwiseAbs() * max_length /
+         state.lengths.cwiseProduct(state.axial_forces.cwiseAbs()).sum())
+            .cwiseMax(min_activation)
+            .cwiseMin(1.0f);
 }
 
 void geometry_step(Analysis_state &state)
@@ -214,10 +213,10 @@ void geometry_step(Analysis_state &state)
         gradients[j] += gradient_contrib;
     }
 
-    for (const auto [x, y] : gradients)
+    /*for (const auto [x, y] : gradients)
     {
         std::cout << x << ' ' << y << '\n';
-    }
+    }*/
 }
 
 } // namespace
@@ -265,10 +264,10 @@ void optimization_init(const std::vector<vec2> &fixed_nodes,
 
 void optimization_step(Analysis_state &state)
 {
-    // Sizing step (size edges)
+    // Size edges
     equal_stress_projection(state);
 
-    // Geometry step (move nodes)
+    // Move nodes
     geometry_step(state);
 
     // Add/remove nodes and re-triangulate
