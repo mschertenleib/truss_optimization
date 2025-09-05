@@ -6,6 +6,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <format>
 #include <iostream>
 #include <numeric>
 #include <random>
@@ -117,9 +118,8 @@ void solve_equilibrium_system(Analysis_state &state)
 
     if (const auto result = solver.info(); result != Eigen::Success)
     {
-        std::ostringstream message;
-        message << "Decomposition failed: " << to_string(result);
-        throw std::runtime_error(message.str());
+        throw std::runtime_error(
+            std::format("Decomposition failed: {}", to_string(result)));
     }
 
     const auto num_dofs = state.nodes.size() * 2;
@@ -128,9 +128,8 @@ void solve_equilibrium_system(Analysis_state &state)
     free_displacements = solver.solve(state.loads);
     if (const auto result = solver.info(); result != Eigen::Success)
     {
-        std::ostringstream message;
-        message << "Solving failed: " << to_string(result);
-        throw std::runtime_error(message.str());
+        throw std::runtime_error(
+            std::format("Solving failed: {}", to_string(result)));
     }
 
     state.displacements.setZero(num_dofs);

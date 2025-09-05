@@ -409,9 +409,8 @@ create_shader(GLenum type, std::size_t size, const char *const code[])
         glGetShaderiv(shader.get(), GL_INFO_LOG_LENGTH, &buf_length);
         std::string message(static_cast<std::size_t>(buf_length), '\0');
         glGetShaderInfoLog(shader.get(), buf_length, nullptr, message.data());
-        std::ostringstream oss;
-        oss << "Shader compilation failed:\n" << message << '\n';
-        throw std::runtime_error(oss.str());
+        throw std::runtime_error(
+            std::format("Shader compilation failed:\n{}", message));
     }
 
     return shader;
@@ -464,15 +463,14 @@ create_shader(GLenum type, std::size_t size, const char *const code[])
         glGetProgramiv(program.get(), GL_INFO_LOG_LENGTH, &buf_length);
         std::string message(static_cast<std::size_t>(buf_length), '\0');
         glGetProgramInfoLog(program.get(), buf_length, nullptr, message.data());
-        std::ostringstream oss;
-        oss << "Program linking failed:\n" << message << '\n';
-        throw std::runtime_error(oss.str());
+        throw std::runtime_error(
+            std::format("Program linking failed:\n{}", message));
     }
 
     return program;
 }
 
-constexpr auto vertex_shader_code = R"(
+inline constexpr auto vertex_shader_code = R"(
 layout (location = 0) in vec2 vertex_position;
 layout (location = 1) in vec4 vertex_local;
 layout (location = 2) in vec3 vertex_color;
@@ -488,7 +486,7 @@ void main()
     color = vertex_color;
 })";
 
-constexpr auto line_fragment_shader_code = R"(
+inline constexpr auto line_fragment_shader_code = R"(
 in vec4 local;
 in vec3 color;
 
@@ -507,7 +505,7 @@ void main()
     frag_color = vec4(color, alpha);
 })";
 
-constexpr auto circle_fragment_shader_code = R"(
+inline constexpr auto circle_fragment_shader_code = R"(
 in vec4 local;
 in vec3 color;
 
@@ -592,9 +590,8 @@ void update_vertex_buffer(GLuint vao,
     const std::filesystem::path path(file_name);
     if (!std::filesystem::exists(path))
     {
-        std::ostringstream oss;
-        oss << "File " << path << " does not exist";
-        throw std::runtime_error(oss.str());
+        throw std::runtime_error(
+            std::format("File \"{}\" does not exist", path.string()));
     }
 
     const auto file_size = std::filesystem::file_size(path);
@@ -603,18 +600,16 @@ void update_vertex_buffer(GLuint vao,
     std::ifstream file(path, std::ios::binary);
     if (!file)
     {
-        std::ostringstream oss;
-        oss << "Failed to open file " << path;
-        throw std::runtime_error(oss.str());
+        throw std::runtime_error(
+            std::format("Failed to open file \"{}\"", path.string()));
     }
 
     file.read(reinterpret_cast<char *>(buffer.data()),
               static_cast<std::streamsize>(file_size));
     if (file.eof())
     {
-        std::ostringstream oss;
-        oss << "End-of-file reached while reading file " << path;
-        throw std::runtime_error(oss.str());
+        throw std::runtime_error(std::format(
+            "End-of-file reached while reading file \"{}\"", path.string()));
     }
 
     return buffer;
