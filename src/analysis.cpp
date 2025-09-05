@@ -168,17 +168,16 @@ void make_triangulation(Analysis_state &state)
 {
     CDT::Triangulation<float> cdt;
 
-    // FIXME: `vertices` is identical to `nodes`, just a different type
-    std::vector<CDT::V2d<float>> vertices;
-    vertices.reserve(state.nodes.size());
-    for (const auto [x, y] : state.nodes)
-    {
-        vertices.emplace_back(x, y);
-    }
-    cdt.insertVertices(vertices);
+    cdt.insertVertices(
+        state.nodes.cbegin(),
+        state.nodes.cend(),
+        [](const vec2 &v) { return v.x; },
+        [](const vec2 &v) { return v.y; });
     cdt.eraseSuperTriangle();
 
-    // FIXME: `edges` is identical to `elements`, just a different type
+    // FIXME: is there a better way to do this? I feel like the elements/edges
+    // we store should be in a std::vector anyway so the copy from the
+    // std::unordered_set is necessary
     const auto edges = CDT::extractEdgesFromTriangles(cdt.triangles);
     state.elements.clear();
     state.elements.reserve(edges.size());

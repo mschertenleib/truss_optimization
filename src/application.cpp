@@ -410,22 +410,18 @@ create_shader(GLenum type, std::size_t size, const char *const code[])
                                   const char *fragment_shader_code)
 {
     std::vector<const char *> shader_code;
-
+    shader_code.reserve(3);
+    shader_code.push_back(glsl_version);
     if (std::string_view(glsl_version).ends_with("es"))
     {
-        shader_code.reserve(4);
-        shader_code.push_back(glsl_version);
-        shader_code.push_back("\n");
-        shader_code.push_back("precision highp float;\n");
-        shader_code.push_back(vertex_shader_code);
+        shader_code.push_back("\nprecision highp float;\n");
     }
     else
     {
-        shader_code.reserve(3);
-        shader_code.push_back(glsl_version);
         shader_code.push_back("\n");
-        shader_code.push_back(vertex_shader_code);
     }
+    shader_code.push_back(vertex_shader_code);
+
     const auto vertex_shader =
         create_shader(GL_VERTEX_SHADER, shader_code.size(), shader_code.data());
 
