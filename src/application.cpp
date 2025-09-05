@@ -871,9 +871,7 @@ void main_loop_update(Application &app)
             force >= 0.0f ? force / max_force : force / min_force;
         const auto max_color = force >= 0.0f ? vec3 {0.25f, 0.25f, 1.0f}
                                              : vec3 {1.0f, 0.25f, 0.25f};
-        const vec3 color {rel_force * max_color.x + 1.0f - rel_force,
-                          rel_force * max_color.y + 1.0f - rel_force,
-                          rel_force * max_color.z + 1.0f - rel_force};
+        const auto color = rel_force * max_color + 1.0f - rel_force;
         app.lines.push_back({.a = app.analysis.nodes[i],
                              .b = app.analysis.nodes[j],
                              .thickness = activation * 0.03f,

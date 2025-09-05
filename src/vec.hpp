@@ -3,7 +3,15 @@
 
 #include <cmath>
 
-struct vec2
+template <unsigned int N>
+struct vec;
+
+using vec2 = vec<2>;
+using vec3 = vec<3>;
+using vec4 = vec<4>;
+
+template <>
+struct vec<2>
 {
     float x;
     float y;
@@ -14,7 +22,8 @@ struct vec2
     operator!=(const vec2 &) const noexcept = default;
 };
 
-struct vec3
+template <>
+struct vec<3>
 {
     float x;
     float y;
@@ -26,7 +35,8 @@ struct vec3
     operator!=(const vec3 &) const noexcept = default;
 };
 
-struct vec4
+template <>
+struct vec<4>
 {
     float x;
     float y;
@@ -109,49 +119,127 @@ struct vec4
     return {f / v.x, f / v.y};
 }
 
-constexpr vec2 &operator+=(vec2 &u, const vec2 &v) noexcept
+[[nodiscard]] constexpr vec3 operator+(const vec3 &v) noexcept
+{
+    return v;
+}
+
+[[nodiscard]] constexpr vec3 operator-(const vec3 &v) noexcept
+{
+    return {-v.x, -v.y, -v.z};
+}
+
+[[nodiscard]] constexpr vec3 operator+(const vec3 &u, const vec3 &v) noexcept
+{
+    return {u.x + v.x, u.y + v.y, u.z + v.z};
+}
+
+[[nodiscard]] constexpr vec3 operator-(const vec3 &u, const vec3 &v) noexcept
+{
+    return {u.x - v.x, u.y - v.y, u.z - v.z};
+}
+
+[[nodiscard]] constexpr vec3 operator*(const vec3 &u, const vec3 &v) noexcept
+{
+    return {u.x * v.x, u.y * v.y, u.z * v.z};
+}
+
+[[nodiscard]] constexpr vec3 operator/(const vec3 &u, const vec3 &v) noexcept
+{
+    return {u.x / v.x, u.y / v.y, u.z / v.z};
+}
+
+[[nodiscard]] constexpr vec3 operator+(const vec3 &v, float f) noexcept
+{
+    return {v.x + f, v.y + f, v.z + f};
+}
+
+[[nodiscard]] constexpr vec3 operator-(const vec3 &v, float f) noexcept
+{
+    return {v.x - f, v.y - f, v.z - f};
+}
+
+[[nodiscard]] constexpr vec3 operator*(const vec3 &v, float f) noexcept
+{
+    return {v.x * f, v.y * f, v.z * f};
+}
+
+[[nodiscard]] constexpr vec3 operator/(const vec3 &v, float f) noexcept
+{
+    return {v.x / f, v.y / f, v.z / f};
+}
+
+[[nodiscard]] constexpr vec3 operator+(float f, const vec3 &v) noexcept
+{
+    return {f + v.x, f + v.y, f + v.z};
+}
+
+[[nodiscard]] constexpr vec3 operator-(float f, const vec3 &v) noexcept
+{
+    return {f - v.x, f - v.y, f - v.z};
+}
+
+[[nodiscard]] constexpr vec3 operator*(float f, const vec3 &v) noexcept
+{
+    return {f * v.x, f * v.y, f * v.z};
+}
+
+[[nodiscard]] constexpr vec3 operator/(float f, const vec3 &v) noexcept
+{
+    return {f / v.x, f / v.y, f / v.z};
+}
+
+template <unsigned int N>
+constexpr vec<N> &operator+=(vec<N> &u, const vec<N> &v) noexcept
 {
     u = u + v;
     return u;
 }
 
-constexpr vec2 &operator-=(vec2 &u, const vec2 &v) noexcept
+template <unsigned int N>
+constexpr vec<N> &operator-=(vec<N> &u, const vec<N> &v) noexcept
 {
     u = u - v;
     return u;
 }
 
-constexpr vec2 &operator*=(vec2 &u, const vec2 &v) noexcept
+template <unsigned int N>
+constexpr vec<N> &operator*=(vec<N> &u, const vec<N> &v) noexcept
 {
     u = u * v;
     return u;
 }
 
-constexpr vec2 &operator/=(vec2 &u, const vec2 &v) noexcept
+template <unsigned int N>
+constexpr vec<N> &operator/=(vec<N> &u, const vec<N> &v) noexcept
 {
     u = u / v;
     return u;
 }
 
-constexpr vec2 &operator+=(vec2 &v, float f) noexcept
+template <unsigned int N>
+constexpr vec<N> &operator+=(vec<N> &v, float f) noexcept
 {
     v = v + f;
     return v;
 }
 
-constexpr vec2 &operator-=(vec2 &v, float f) noexcept
+template <unsigned int N>
+constexpr vec<N> &operator-=(vec<N> &v, float f) noexcept
 {
     v = v - f;
     return v;
 }
 
-constexpr vec2 &operator*=(vec2 &v, float f) noexcept
+template <unsigned int N>
+constexpr vec<N> &operator*=(vec<N> &v, float f) noexcept
 {
     v = v * f;
     return v;
 }
 
-constexpr vec2 &operator/=(vec2 &v, float f) noexcept
+template <unsigned int N>
+constexpr vec<N> &operator/=(vec<N> &v, float f) noexcept
 {
     v = v / f;
     return v;
@@ -162,17 +250,30 @@ constexpr vec2 &operator/=(vec2 &v, float f) noexcept
     return u.x * v.x + u.y * v.y;
 }
 
+[[nodiscard]] constexpr float dot(const vec3 &u, const vec3 &v) noexcept
+{
+    return u.x * v.x + u.y * v.y + u.z * v.z;
+}
+
 [[nodiscard]] constexpr float cross(const vec2 &u, const vec2 &v) noexcept
 {
     return u.x * v.y - u.y * v.x;
 }
 
-[[nodiscard]] inline float norm(const vec2 &v) noexcept
+[[nodiscard]] constexpr vec3 cross(const vec3 &u, const vec3 &v) noexcept
+{
+    return {
+        u.y * v.z - u.z * v.y, u.z * v.x - u.x * v.z, u.x * v.y - u.y * v.x};
+}
+
+template <unsigned int N>
+[[nodiscard]] inline float norm(const vec<N> &v) noexcept
 {
     return std::sqrt(dot(v, v));
 }
 
-[[nodiscard]] inline vec2 normalize(const vec2 &v) noexcept
+template <unsigned int N>
+[[nodiscard]] inline vec<N> normalize(const vec<N> &v) noexcept
 {
     return v * (1.0f / norm(v));
 }
