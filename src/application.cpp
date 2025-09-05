@@ -360,7 +360,8 @@ void glfw_framebuffer_size_callback(GLFWwindow *window, int width, int height)
 
     app->framebuffer_width = width;
     app->framebuffer_height = height;
-    app->viewport = centered_viewport(1.0f, width, height);
+    app->viewport = centered_viewport(
+        Application::world_size.x / Application::world_size.y, width, height);
 }
 
 void load_gl_functions()
@@ -431,12 +432,22 @@ create_shader(GLenum type, std::size_t size, const char *const code[])
     {
         shader_code.push_back("\n");
     }
+    const auto constants =
+        std::format("const vec2 world_center = vec2({}, {});\n"
+                    "const vec2 world_size = vec2({}, {});\n",
+                    Application::world_center.x,
+                    Application::world_center.y,
+                    Application::world_size.x,
+                    Application::world_size.y);
+    shader_code.push_back(constants.c_str());
     shader_code.push_back(vertex_shader_code);
 
     const auto vertex_shader =
         create_shader(GL_VERTEX_SHADER, shader_code.size(), shader_code.data());
 
-    shader_code.back() = fragment_shader_code;
+    shader_code.pop_back();
+    shader_code.pop_back();
+    shader_code.push_back(fragment_shader_code);
     const auto fragment_shader = create_shader(
         GL_FRAGMENT_SHADER, shader_code.size(), shader_code.data());
 
@@ -471,7 +482,8 @@ out vec3 color;
 
 void main()
 {
-    gl_Position = vec4(vertex_position, 0.0, 1.0);
+    vec2 position = (vertex_position - world_center) / (0.5 * world_size);
+    gl_Position = vec4(position, 0.0, 1.0);
     local = vertex_local;
     color = vertex_color;
 })";
@@ -781,7 +793,9 @@ void create_raster_geometry(const std::vector<Line> &lines,
     glfwGetFramebufferSize(
         app.window.get(), &app.framebuffer_width, &app.framebuffer_height);
     app.viewport =
-        centered_viewport(1.0f, app.framebuffer_width, app.framebuffer_height);
+        centered_viewport(Application::world_size.x / Application::world_size.y,
+                          app.framebuffer_width,
+                          app.framebuffer_height);
 
     glfwSwapInterval(1);
 
