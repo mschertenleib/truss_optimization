@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -145,6 +146,7 @@ struct Line
 {
     vec2 a;
     vec2 b;
+    float thickness;
     vec3 color;
 };
 
@@ -152,6 +154,7 @@ struct Circle
 {
     vec2 center;
     float radius;
+    float thickness;
     vec3 color;
 };
 
@@ -654,7 +657,6 @@ vec4(textColor, a);
 
 void create_raster_geometry(const std::vector<Line> &lines,
                             const std::vector<Circle> &circles,
-                            float thickness,
                             Raster_geometry &geometry)
 {
     geometry.vertices.clear();
@@ -667,13 +669,13 @@ void create_raster_geometry(const std::vector<Line> &lines,
         const auto line_length = norm(line_vec);
         const auto line_dir = line_vec * (1.0f / line_length);
         const auto delta_left =
-            vec2 {-line_dir.y, line_dir.x} * (thickness * 0.5f);
-        const auto delta_up = line_dir * (thickness * 0.5f);
+            vec2 {-line_dir.y, line_dir.x} * (line.thickness * 0.5f);
+        const auto delta_up = line_dir * (line.thickness * 0.5f);
         const auto start_left = line.a + delta_left - delta_up;
         const auto start_right = line.a - delta_left - delta_up;
         const auto end_left = line.b + delta_left + delta_up;
         const auto end_right = line.b - delta_left + delta_up;
-        const auto aspect_ratio = line_length / thickness;
+        const auto aspect_ratio = line_length / line.thickness;
 
         const auto first_index =
             static_cast<std::uint32_t>(geometry.vertices.size());
@@ -700,12 +702,12 @@ void create_raster_geometry(const std::vector<Line> &lines,
     geometry.circle_indices_offset = geometry.indices.size();
     for (const auto &circle : circles)
     {
-        const auto half_side = circle.radius + 0.5f * thickness;
+        const auto half_side = circle.radius + 0.5f * circle.thickness;
         const auto bottom_left = circle.center + vec2 {-half_side, -half_side};
         const auto bottom_right = circle.center + vec2 {half_side, -half_side};
         const auto top_right = circle.center + vec2 {half_side, half_side};
         const auto top_left = circle.center + vec2 {-half_side, half_side};
-        const auto rel_thickness = thickness / half_side;
+        const auto rel_thickness = circle.thickness / half_side;
 
         const auto first_index =
             static_cast<std::uint32_t>(geometry.vertices.size());
@@ -854,20 +856,33 @@ void main_loop_update(Application &app)
         }
     }
 
+    const auto min_force = app.analysis.axial_forces.minCoeff();
+    const auto max_force = app.analysis.axial_forces.maxCoeff();
     app.lines.clear();
     for (std::size_t e {0}; e < app.analysis.elements.size(); ++e)
     {
         const auto [i, j] = app.analysis.elements[e];
-        const auto node_i = app.analysis.nodes[i];
-        const auto node_j = app.analysis.nodes[j];
-        const vec3 color {
-            app.analysis.activations[static_cast<Eigen::Index>(e)],
-            app.analysis.activations[static_cast<Eigen::Index>(e)],
-            app.analysis.activations[static_cast<Eigen::Index>(e)]};
-        app.lines.push_back({.a = node_i, .b = node_j, .color = color});
+        const auto activation =
+            app.analysis.activations[static_cast<Eigen::Index>(e)];
+        const auto force =
+            app.analysis.axial_forces[static_cast<Eigen::Index>(e)];
+
+        const auto rel_force =
+            force >= 0.0f ? force / max_force : force / min_force;
+        const auto max_color = force >= 0.0f ? vec3 {0.25f, 0.25f, 1.0f}
+                                             : vec3 {1.0f, 0.25f, 0.25f};
+        const vec3 color {rel_force * max_color.x + 1.0f - rel_force,
+                          rel_force * max_color.y + 1.0f - rel_force,
+                          rel_force * max_color.z + 1.0f - rel_force};
+        app.lines.push_back({.a = app.analysis.nodes[i],
+                             .b = app.analysis.nodes[j],
+                             .thickness = activation * 0.03f,
+                             .color = color});
     }
 
     constexpr vec3 color {0.75f, 0.75f, 0.75f};
+    constexpr float thickness {0.02f};
+
     for (const auto &rectangle :
          {app.play_button, app.step_button, app.restart_button})
     {
@@ -875,10 +890,10 @@ void main_loop_update(Application &app)
         const auto p1 = rectangle.pos + vec2 {rectangle.size.x, 0.0f};
         const auto p2 = rectangle.pos + rectangle.size;
         const auto p3 = rectangle.pos + vec2 {0.0f, rectangle.size.y};
-        app.lines.emplace_back(p0, p1, color);
-        app.lines.emplace_back(p1, p2, color);
-        app.lines.emplace_back(p2, p3, color);
-        app.lines.emplace_back(p3, p0, color);
+        app.lines.emplace_back(p0, p1, thickness, color);
+        app.lines.emplace_back(p1, p2, thickness, color);
+        app.lines.emplace_back(p2, p3, thickness, color);
+        app.lines.emplace_back(p3, p0, thickness, color);
     }
 
     if (app.state == State::running)
@@ -891,8 +906,8 @@ void main_loop_update(Application &app)
             app.play_button.pos + app.play_button.size * vec2 {0.7f, 0.3f};
         const auto p3 =
             app.play_button.pos + app.play_button.size * vec2 {0.7f, 0.7f};
-        app.lines.emplace_back(p0, p1, color);
-        app.lines.emplace_back(p2, p3, color);
+        app.lines.emplace_back(p0, p1, thickness, color);
+        app.lines.emplace_back(p2, p3, thickness, color);
     }
     else
     {
@@ -902,9 +917,9 @@ void main_loop_update(Application &app)
             app.play_button.pos + app.play_button.size * vec2 {0.3f, 0.8f};
         const auto p2 =
             app.play_button.pos + app.play_button.size * vec2 {0.3f, 0.2f};
-        app.lines.emplace_back(p0, p1, color);
-        app.lines.emplace_back(p1, p2, color);
-        app.lines.emplace_back(p2, p0, color);
+        app.lines.emplace_back(p0, p1, thickness, color);
+        app.lines.emplace_back(p1, p2, thickness, color);
+        app.lines.emplace_back(p2, p0, thickness, color);
     }
 
     const auto p0 =
@@ -917,20 +932,21 @@ void main_loop_update(Application &app)
         app.step_button.pos + app.step_button.size * vec2 {0.7f, 0.2f};
     const auto p4 =
         app.step_button.pos + app.step_button.size * vec2 {0.7f, 0.8f};
-    app.lines.emplace_back(p0, p1, color);
-    app.lines.emplace_back(p1, p2, color);
-    app.lines.emplace_back(p2, p0, color);
-    app.lines.emplace_back(p3, p4, color);
+    app.lines.emplace_back(p0, p1, thickness, color);
+    app.lines.emplace_back(p1, p2, thickness, color);
+    app.lines.emplace_back(p2, p0, thickness, color);
+    app.lines.emplace_back(p3, p4, thickness, color);
 
     app.circles.clear();
     for (std::size_t i {0}; i < app.analysis.nodes.size(); ++i)
     {
         app.circles.push_back({.center = app.analysis.nodes[i],
                                .radius = 0.02f,
-                               .color = {0.75f, 0.25f, 0.25f}});
+                               .thickness = 0.02f,
+                               .color = {1.0f, 1.0f, 1.0f}});
     }
 
-    create_raster_geometry(app.lines, app.circles, 0.02f, app.raster_geometry);
+    create_raster_geometry(app.lines, app.circles, app.raster_geometry);
     std::tie(app.vao, app.vbo, app.ibo) =
         create_vertex_index_buffers(app.raster_geometry);
 
@@ -945,6 +961,18 @@ void main_loop_update(Application &app)
 #ifndef __EMSCRIPTEN__
     glfwSwapBuffers(app.window.get());
 #endif
+
+    const double now {glfwGetTime()};
+    static double last_time {now};
+    const auto elapsed = now - last_time;
+    if (elapsed > 0.0)
+    {
+        std::cout << std::format("{:7.2f} ms, {:7.2f} fps\r",
+                                 elapsed * 1000.0,
+                                 1.0 / elapsed)
+                  << std::flush;
+        last_time = now;
+    }
 }
 
 } // namespace
