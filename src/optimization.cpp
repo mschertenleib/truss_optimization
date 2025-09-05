@@ -1,4 +1,4 @@
-#include "analysis.hpp"
+#include "optimization.hpp"
 
 #include "CDT.h"
 
@@ -190,11 +190,12 @@ void make_triangulation(Analysis_state &state)
 
 void equal_stress_projection(Analysis_state &state)
 {
-    state.activations =
-        (state.axial_forces.cwiseAbs() * max_length /
-         state.lengths.cwiseProduct(state.axial_forces.cwiseAbs()).sum())
-            .cwiseMax(min_activation)
-            .cwiseMin(1.0f);
+    const auto factor =
+        max_length /
+        state.lengths.cwiseProduct(state.axial_forces.cwiseAbs()).sum();
+    state.activations = (state.axial_forces.cwiseAbs() * factor)
+                            .cwiseMax(min_activation)
+                            .cwiseMin(1.0f);
 }
 
 void geometry_step(Analysis_state &state)
