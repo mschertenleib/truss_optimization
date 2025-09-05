@@ -192,6 +192,7 @@ struct Application
     Analysis_state analysis;
     unsigned int step;
     State state;
+    bool should_idle;
     Unique_resource<Stateless, GLFW_deleter> glfw_context;
     Unique_resource<GLFWwindow *, Window_deleter> window;
     float scale_x;
@@ -210,7 +211,8 @@ struct Application
     static constexpr vec2 world_center {0.0f, 0.0f};
     static constexpr vec2 world_size {2.0f, 2.0f};
     static constexpr Rectangle play_button {0.85f, 0.15f, 0.1f, 0.1f};
-    static constexpr Rectangle restart_button {0.85f, 0.0f, 0.1f, 0.1f};
+    static constexpr Rectangle step_button {0.85f, 0.0f, 0.1f, 0.1f};
+    static constexpr Rectangle restart_button {0.85f, -0.15f, 0.1f, 0.1f};
 };
 
 template <std::invocable C, std::invocable<GLuint> D>
@@ -316,6 +318,12 @@ void glfw_mouse_button_callback(GLFWwindow *window,
             {
                 app->state = State::idle;
             }
+        }
+        else if (app->state == State::idle &&
+                 is_in_rectangle(mouse_pos, app->step_button))
+        {
+            app->state = State::running;
+            app->should_idle = true;
         }
         else if (is_in_rectangle(mouse_pos, app->restart_button))
         {
@@ -838,6 +846,12 @@ void main_loop_update(Application &app)
     {
         optimization_step(app.analysis);
         ++app.step;
+
+        if (app.should_idle)
+        {
+            app.state = State::idle;
+            app.should_idle = false;
+        }
     }
 
     app.lines.clear();
@@ -852,8 +866,10 @@ void main_loop_update(Application &app)
             app.analysis.activations[static_cast<Eigen::Index>(e)]};
         app.lines.push_back({.a = node_i, .b = node_j, .color = color});
     }
+
     constexpr vec3 color {0.75f, 0.75f, 0.75f};
-    for (const auto &rectangle : {app.play_button, app.restart_button})
+    for (const auto &rectangle :
+         {app.play_button, app.step_button, app.restart_button})
     {
         const auto p0 = rectangle.pos;
         const auto p1 = rectangle.pos + vec2 {rectangle.size.x, 0.0f};
@@ -864,6 +880,7 @@ void main_loop_update(Application &app)
         app.lines.emplace_back(p2, p3, color);
         app.lines.emplace_back(p3, p0, color);
     }
+
     if (app.state == State::running)
     {
         const auto p0 =
@@ -889,6 +906,22 @@ void main_loop_update(Application &app)
         app.lines.emplace_back(p1, p2, color);
         app.lines.emplace_back(p2, p0, color);
     }
+
+    const auto p0 =
+        app.step_button.pos + app.step_button.size * vec2 {0.65f, 0.5f};
+    const auto p1 =
+        app.step_button.pos + app.step_button.size * vec2 {0.3f, 0.8f};
+    const auto p2 =
+        app.step_button.pos + app.step_button.size * vec2 {0.3f, 0.2f};
+    const auto p3 =
+        app.step_button.pos + app.step_button.size * vec2 {0.7f, 0.2f};
+    const auto p4 =
+        app.step_button.pos + app.step_button.size * vec2 {0.7f, 0.8f};
+    app.lines.emplace_back(p0, p1, color);
+    app.lines.emplace_back(p1, p2, color);
+    app.lines.emplace_back(p2, p0, color);
+    app.lines.emplace_back(p3, p4, color);
+
     app.circles.clear();
     for (std::size_t i {0}; i < app.analysis.nodes.size(); ++i)
     {
@@ -896,6 +929,7 @@ void main_loop_update(Application &app)
                                .radius = 0.02f,
                                .color = {0.75f, 0.25f, 0.25f}});
     }
+
     create_raster_geometry(app.lines, app.circles, 0.02f, app.raster_geometry);
     std::tie(app.vao, app.vbo, app.ibo) =
         create_vertex_index_buffers(app.raster_geometry);
