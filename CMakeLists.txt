@@ -154,7 +154,13 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_link_options(${CMAKE_PROJECT_NAME} PRIVATE $<$<CONFIG:Debug>:${san_link}>)
     
     set(lsan_suppressions "${CMAKE_BINARY_DIR}/lsan.supp")
-    file(WRITE "${lsan_suppressions}" "leak:_glfwCreateContextGL")
+    file(WRITE "${lsan_suppressions}"
+"leak:_glfwCreateContextGL
+leak:_glfwInitEGL
+leak:libwayland-client
+leak:libgtk
+leak:libfontconfig
+")
 
     set(asan_defaults "symbolize=1:fast_unwind_on_malloc=0:detect_leaks=1:leak_check_at_exit=1")
     set(lsan_defaults "suppressions=$<SHELL_PATH:${lsan_suppressions}>")
