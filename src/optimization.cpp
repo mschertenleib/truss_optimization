@@ -10,6 +10,7 @@
 #include <iostream>
 #include <numeric>
 #include <random>
+#include <ranges>
 
 namespace
 {
@@ -174,9 +175,7 @@ void make_triangulation(Analysis_state &state)
         [](const vec2 &v) { return v.y; });
     cdt.eraseSuperTriangle();
 
-    // FIXME: is there a better way to do this? I feel like the elements/edges
-    // we store should be in a std::vector anyway so the copy from the
-    // std::unordered_set is necessary
+    // FIXME: is there a better way to do this?
     const auto edges = CDT::extractEdgesFromTriangles(cdt.triangles);
     state.elements.clear();
     state.elements.reserve(edges.size());
@@ -199,23 +198,84 @@ void equal_stress_projection(Analysis_state &state)
 
 void geometry_step(Analysis_state &state)
 {
-    // FIXME: this has to be for free nodes only
+    // FIXME: this has to be for free DOFs only
     std::vector<vec2> gradients(state.nodes.size());
     for (std::size_t e {0}; e < state.elements.size(); ++e)
     {
+        const auto force = state.axial_forces[static_cast<Eigen::Index>(e)];
         const auto gradient_contrib =
-            2.0f * state.energies[static_cast<Eigen::Index>(e)] /
-            state.lengths[static_cast<Eigen::Index>(e)] *
+            force * force /
+            (young_modulus * area *
+             state.activations[static_cast<Eigen::Index>(e)]) *
             state.element_directions[e];
         const auto [i, j] = state.elements[e];
         gradients[i] -= gradient_contrib;
         gradients[j] += gradient_contrib;
     }
 
-    /*for (const auto [x, y] : gradients)
+    auto trial_positions = state.nodes;
+    float gamma {10000.0f};
+    constexpr float move_limit {0.02f};
+    constexpr unsigned int max_tries {10};
+
+    constexpr auto clamp_to_domain = [](const vec2 &pos)
     {
-        std::cout << x << ' ' << y << '\n';
-    }*/
+        // FIXME: this shouldn't be hardcoded
+        return vec2 {std::clamp(pos.x, -0.8f, 0.8f),
+                     std::clamp(pos.y, -0.8f, 0.8f)};
+    };
+
+    // FIXME: don't recompute this
+    const auto old_compliance =
+        state.loads.dot(state.displacements(state.free_dofs));
+
+    // FIXME
+    const auto try_analyze_accept = [&](const std::vector<vec2> &positions)
+    {
+        const auto old_nodes = state.nodes;
+        state.nodes = positions;
+        assemble(state);
+        try
+        {
+            solve_equilibrium_system(state);
+        }
+        catch (const std::exception &e)
+        {
+            state.nodes = old_nodes;
+            return false;
+        }
+        const auto new_compliance =
+            state.loads.dot(state.displacements(state.free_dofs));
+        if (new_compliance >= old_compliance)
+        {
+            state.nodes = old_nodes;
+            return false;
+        }
+        return true;
+    };
+
+    for (unsigned int try_count {0}; try_count < max_tries; ++try_count)
+    {
+        // FIXME: this assumes the first nodes are the fixed ones, followed by
+        // the loaded one
+        for (std::size_t i {state.fixed_dofs.size() / 2 + 1};
+             i < state.nodes.size();
+             ++i)
+        {
+            auto step = -gamma * gradients[i];
+            if (const auto norm_step = norm(step); norm_step > move_limit)
+            {
+                step *= move_limit / norm_step;
+            }
+
+            trial_positions[i] = clamp_to_domain(state.nodes[i] + step);
+        }
+        if (try_analyze_accept(trial_positions))
+        {
+            break;
+        }
+        gamma *= 0.5f;
+    }
 }
 
 } // namespace
@@ -241,9 +301,6 @@ void optimization_init(const std::vector<vec2> &fixed_nodes,
 
     make_triangulation(state);
 
-    state.activations.resize(state.elements.size());
-    std::fill(state.activations.begin(), state.activations.end(), 1.0f);
-
     state.fixed_dofs.resize(fixed_nodes.size() * 2);
     std::iota(state.fixed_dofs.begin(), state.fixed_dofs.end(), 0);
 
@@ -256,7 +313,18 @@ void optimization_init(const std::vector<vec2> &fixed_nodes,
     state.loads(0) = load_vector.x;
     state.loads(1) = load_vector.y;
 
-    // Solve linear elasticity equilibrium system
+    state.activations.resize(state.elements.size());
+    float total_length {0.0f};
+    for (std::size_t element_index {0}; element_index < state.elements.size();
+         ++element_index)
+    {
+        const auto [i, j] = state.elements[element_index];
+        total_length += norm(state.nodes[j] - state.nodes[i]);
+    }
+    std::fill(state.activations.begin(),
+              state.activations.end(),
+              max_length / total_length);
+
     assemble(state);
     solve_equilibrium_system(state);
 }
@@ -272,6 +340,9 @@ void optimization_step(Analysis_state &state)
     // Add/remove nodes and re-triangulate
 
     // Solve linear elasticity equilibrium system
-    assemble(state);
-    solve_equilibrium_system(state);
+    // Currently done in geometry_step, but we might want to only partly compute
+    // it there?
+
+    // assemble(state);
+    // solve_equilibrium_system(state);
 }
