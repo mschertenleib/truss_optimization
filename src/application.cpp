@@ -84,11 +84,11 @@ namespace
 #define ENUMERATE_GL_FUNCTIONS_430(f)                                          \
     f(PFNGLDEBUGMESSAGECALLBACKPROC, glDebugMessageCallback);
 
-#ifndef __EMSCRIPTEN__
+#ifdef __EMSCRIPTEN__
+#define ENUMERATE_GL_FUNCTIONS(f) ENUMERATE_GL_FUNCTIONS_COMMON(f)
+#else
 #define ENUMERATE_GL_FUNCTIONS(f)                                              \
     ENUMERATE_GL_FUNCTIONS_COMMON(f) ENUMERATE_GL_FUNCTIONS_430(f)
-#else
-#define ENUMERATE_GL_FUNCTIONS(f) ENUMERATE_GL_FUNCTIONS_COMMON(f)
 #endif
 
 // clang-format off
@@ -202,38 +202,17 @@ struct Application
     std::vector<Line> lines;
     std::vector<Circle> circles;
     Raster_geometry raster_geometry;
-    Unique_handle<GLuint, GL_array_deleter> vao {};
-    Unique_handle<GLuint, GL_array_deleter> vbo {};
-    Unique_handle<GLuint, GL_array_deleter> ibo {};
-    Unique_handle<GLuint, GL_deleter> line_program {};
-    Unique_handle<GLuint, GL_deleter> circle_program {};
+    Unique_handle<GLuint, GL_array_deleter> vao;
+    Unique_handle<GLuint, GL_array_deleter> vbo;
+    Unique_handle<GLuint, GL_array_deleter> ibo;
+    Unique_handle<GLuint, GL_deleter> line_program;
+    Unique_handle<GLuint, GL_deleter> circle_program;
     static constexpr vec2 world_center {0.0f, 0.0f};
     static constexpr vec2 world_size {2.0f, 2.0f};
     static constexpr Rectangle play_button {0.85f, 0.15f, 0.1f, 0.1f};
     static constexpr Rectangle step_button {0.85f, 0.0f, 0.1f, 0.1f};
     static constexpr Rectangle restart_button {0.85f, -0.15f, 0.1f, 0.1f};
 };
-
-template <std::invocable C, std::invocable<GLuint> D>
-[[nodiscard]] auto create_object(C &&create, D &&destroy)
-{
-    return Unique_handle(create(), GL_deleter {destroy});
-}
-
-template <std::invocable<GLenum> C, std::invocable<GLuint> D>
-[[nodiscard]] auto create_object(C &&create, GLenum arg, D &&destroy)
-{
-    return Unique_handle(create(arg), GL_deleter {destroy});
-}
-
-template <std::invocable<GLsizei, GLuint *> C,
-          std::invocable<GLsizei, const GLuint *> D>
-[[nodiscard]] auto create_object(C &&create, D &&destroy)
-{
-    GLuint object {};
-    create(1, &object);
-    return Unique_handle(object, GL_array_deleter {destroy});
-}
 
 [[nodiscard]] constexpr float screen_to_world(float x,
                                               int screen_min,
@@ -391,7 +370,7 @@ void APIENTRY gl_debug_callback([[maybe_unused]] GLenum source,
 [[nodiscard]] auto
 create_shader(GLenum type, std::size_t size, const char *const code[])
 {
-    auto shader = create_object(glCreateShader, type, glDeleteShader);
+    Unique_handle shader(glCreateShader(type), GL_deleter {glDeleteShader});
 
     glShaderSource(shader.get(), static_cast<GLsizei>(size), code, nullptr);
     glCompileShader(shader.get());
@@ -445,7 +424,7 @@ create_shader(GLenum type, std::size_t size, const char *const code[])
     const auto fragment_shader = create_shader(
         GL_FRAGMENT_SHADER, shader_code.size(), shader_code.data());
 
-    auto program = create_object(glCreateProgram, glDeleteProgram);
+    Unique_handle program(glCreateProgram(), GL_deleter {glDeleteProgram});
     glAttachShader(program.get(), vertex_shader.get());
     glAttachShader(program.get(), fragment_shader.get());
     glLinkProgram(program.get());
@@ -518,10 +497,14 @@ void main()
 
 [[nodiscard]] auto create_vertex_index_buffers(const Raster_geometry &geometry)
 {
-    auto vao = create_object(glGenVertexArrays, glDeleteVertexArrays);
+    GLuint vao_gl {};
+    glGenVertexArrays(1, &vao_gl);
+    Unique_handle vao(vao_gl, GL_array_deleter {glDeleteVertexArrays});
     glBindVertexArray(vao.get());
 
-    auto vbo = create_object(glGenBuffers, glDeleteBuffers);
+    GLuint vbo_gl {};
+    glGenBuffers(1, &vbo_gl);
+    Unique_handle vbo(vbo_gl, GL_array_deleter {glDeleteBuffers});
     glBindBuffer(GL_ARRAY_BUFFER, vbo.get());
     glBufferData(
         GL_ARRAY_BUFFER,
@@ -529,7 +512,9 @@ void main()
         geometry.vertices.data(),
         GL_DYNAMIC_DRAW);
 
-    auto ibo = create_object(glGenBuffers, glDeleteBuffers);
+    GLuint ibo_gl {};
+    glGenBuffers(1, &ibo_gl);
+    Unique_handle ibo(ibo_gl, GL_array_deleter {glDeleteBuffers});
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo.get());
     glBufferData(
         GL_ELEMENT_ARRAY_BUFFER,
@@ -626,7 +611,9 @@ void create_font_texture()
     stbtt_PackFontRange(&pc, ttf.data(), 0, 32.0f, 32, num_chars, char_data);
     stbtt_PackEnd(&pc);
 
-    auto font_texture = create_object(glGenTextures, glDeleteTextures);
+    GLuint texture_gl {};
+    glGenTextures(1, &texture_gl);
+    Unique_handle font_texture(texture_gl, GL_array_deleter {glDeleteTextures});
     glBindTexture(GL_TEXTURE_2D, font_texture.get());
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D,
