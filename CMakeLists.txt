@@ -66,7 +66,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     src/main.cpp
     src/application.hpp src/application.cpp
     src/optimization.hpp src/optimization.cpp
-    src/unique_resource.hpp
+    src/unique_handle.hpp
     src/vec.hpp
 )
 target_include_directories(${CMAKE_PROJECT_NAME} SYSTEM PRIVATE

@@ -15,7 +15,7 @@ struct Element
     std::uint32_t node_j;
 };
 
-struct Analysis_state
+struct Optimization_state
 {
     std::vector<vec2> nodes;
     std::vector<Element> elements;
@@ -35,7 +35,7 @@ struct Analysis_state
 void optimization_init(const std::vector<vec2> &fixed_nodes,
                        const vec2 &load_node,
                        const vec2 &load_vector,
-                       Analysis_state &state);
-void optimization_step(Analysis_state &state);
+                       Optimization_state &state);
+void optimization_step(Optimization_state &state);
 
 #endif

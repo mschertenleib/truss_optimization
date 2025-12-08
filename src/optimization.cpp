@@ -33,7 +33,7 @@ to_string(Eigen::ComputationInfo computation_info) noexcept
     return "UNDEFINED";
 }
 
-void assemble(Analysis_state &state)
+void assemble(Optimization_state &state)
 {
     const auto num_dofs = state.nodes.size() * 2;
     const auto num_free_dofs = num_dofs - state.fixed_dofs.size();
@@ -111,7 +111,7 @@ void assemble(Analysis_state &state)
     state.stiffness_matrix.prune(0.0f);
 }
 
-void solve_equilibrium_system(Analysis_state &state)
+void solve_equilibrium_system(Optimization_state &state)
 {
     Eigen::SimplicialLDLT<Eigen::SparseMatrix<float>, Eigen::Lower> solver;
     solver.compute(state.stiffness_matrix);
@@ -164,7 +164,7 @@ void solve_equilibrium_system(Analysis_state &state)
     }
 }
 
-void make_triangulation(Analysis_state &state)
+void make_triangulation(Optimization_state &state)
 {
     CDT::Triangulation<float> cdt;
 
@@ -186,7 +186,7 @@ void make_triangulation(Analysis_state &state)
     }
 }
 
-void equal_stress_projection(Analysis_state &state)
+void equal_stress_projection(Optimization_state &state)
 {
     const auto factor =
         max_length /
@@ -196,7 +196,7 @@ void equal_stress_projection(Analysis_state &state)
                             .cwiseMin(1.0f);
 }
 
-void geometry_step(Analysis_state &state)
+void geometry_step(Optimization_state &state)
 {
     // FIXME: this has to be for free DOFs only
     std::vector<vec2> gradients(state.nodes.size());
@@ -283,7 +283,7 @@ void geometry_step(Analysis_state &state)
 void optimization_init(const std::vector<vec2> &fixed_nodes,
                        const vec2 &load_node,
                        const vec2 &load_vector,
-                       Analysis_state &state)
+                       Optimization_state &state)
 {
     state.nodes.clear();
     state.nodes.insert(
@@ -329,7 +329,7 @@ void optimization_init(const std::vector<vec2> &fixed_nodes,
     solve_equilibrium_system(state);
 }
 
-void optimization_step(Analysis_state &state)
+void optimization_step(Optimization_state &state)
 {
     // Size edges
     equal_stress_projection(state);

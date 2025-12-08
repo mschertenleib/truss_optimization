@@ -9,7 +9,6 @@ int main()
     try
     {
         run_application();
-
         return EXIT_SUCCESS;
     }
     catch (const std::exception &e)

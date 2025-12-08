@@ -1,6 +1,6 @@
 #include "application.hpp"
 #include "optimization.hpp"
-#include "unique_resource.hpp"
+#include "unique_handle.hpp"
 #include "vec.hpp"
 
 #define STB_TRUETYPE_IMPLEMENTATION
@@ -97,13 +97,9 @@ namespace
 
 ENUMERATE_GL_FUNCTIONS(DECLARE_GL_FUNCTION)
 
-struct Stateless
-{
-};
-
 struct GLFW_deleter
 {
-    void operator()(Stateless)
+    void operator()()
     {
         glfwTerminate();
     }
@@ -192,12 +188,12 @@ enum struct State
 
 struct Application
 {
-    Analysis_state analysis;
+    Optimization_state analysis;
     unsigned int step;
     State state;
     bool should_idle;
-    Unique_resource<Stateless, GLFW_deleter> glfw_context;
-    Unique_resource<GLFWwindow *, Window_deleter> window;
+    Unique_handle<bool, GLFW_deleter> glfw_context;
+    Unique_handle<GLFWwindow *, Window_deleter> window;
     float scale_x;
     float scale_y;
     int framebuffer_width;
@@ -206,11 +202,11 @@ struct Application
     std::vector<Line> lines;
     std::vector<Circle> circles;
     Raster_geometry raster_geometry;
-    Unique_resource<GLuint, GL_array_deleter> vao {};
-    Unique_resource<GLuint, GL_array_deleter> vbo {};
-    Unique_resource<GLuint, GL_array_deleter> ibo {};
-    Unique_resource<GLuint, GL_deleter> line_program {};
-    Unique_resource<GLuint, GL_deleter> circle_program {};
+    Unique_handle<GLuint, GL_array_deleter> vao {};
+    Unique_handle<GLuint, GL_array_deleter> vbo {};
+    Unique_handle<GLuint, GL_array_deleter> ibo {};
+    Unique_handle<GLuint, GL_deleter> line_program {};
+    Unique_handle<GLuint, GL_deleter> circle_program {};
     static constexpr vec2 world_center {0.0f, 0.0f};
     static constexpr vec2 world_size {2.0f, 2.0f};
     static constexpr Rectangle play_button {0.85f, 0.15f, 0.1f, 0.1f};
@@ -221,13 +217,13 @@ struct Application
 template <std::invocable C, std::invocable<GLuint> D>
 [[nodiscard]] auto create_object(C &&create, D &&destroy)
 {
-    return Unique_resource(create(), GL_deleter {destroy});
+    return Unique_handle(create(), GL_deleter {destroy});
 }
 
 template <std::invocable<GLenum> C, std::invocable<GLuint> D>
 [[nodiscard]] auto create_object(C &&create, GLenum arg, D &&destroy)
 {
-    return Unique_resource(create(arg), GL_deleter {destroy});
+    return Unique_handle(create(arg), GL_deleter {destroy});
 }
 
 template <std::invocable<GLsizei, GLuint *> C,
@@ -236,7 +232,7 @@ template <std::invocable<GLsizei, GLuint *> C,
 {
     GLuint object {};
     create(1, &object);
-    return Unique_resource(object, GL_array_deleter {destroy});
+    return Unique_handle(object, GL_array_deleter {destroy});
 }
 
 [[nodiscard]] constexpr float screen_to_world(float x,
@@ -297,14 +293,13 @@ void glfw_mouse_button_callback(GLFWwindow *window,
         double mouse_x {};
         double mouse_y {};
         glfwGetCursorPos(app->window.get(), &mouse_x, &mouse_y);
-        const auto mouse_world_x =
-            screen_to_world(static_cast<float>(mouse_x) * app->scale_x,
-                            app->viewport.x,
-                            app->viewport.width,
-                            app->world_center.x,
-                            app->world_size.x);
+        const auto mouse_world_x = screen_to_world(static_cast<float>(mouse_x),
+                                                   app->viewport.x,
+                                                   app->viewport.width,
+                                                   app->world_center.x,
+                                                   app->world_size.x);
         const auto mouse_world_y =
-            screen_to_world(static_cast<float>(mouse_y) * app->scale_y,
+            screen_to_world(static_cast<float>(mouse_y),
                             app->viewport.y + app->viewport.height,
                             -app->viewport.height,
                             app->world_center.y,
@@ -743,11 +738,11 @@ void create_raster_geometry(const std::vector<Line> &lines,
 
     glfwSetErrorCallback(&glfw_error_callback);
 
-    if (!glfwInit())
+    app.glfw_context.reset(glfwInit());
+    if (!app.glfw_context.has_value())
     {
         throw std::runtime_error("Failed to initialize GLFW");
     }
-    app.glfw_context.reset(Stateless {});
 
 #ifdef __EMSCRIPTEN__
     // WebGL 2.0
@@ -766,13 +761,12 @@ void create_raster_geometry(const std::vector<Line> &lines,
 #endif
     glfwWindowHint(GLFW_SAMPLES, 0);
 
-    auto *const window_ptr =
-        glfwCreateWindow(1280, 720, "Truss Optimization", nullptr, nullptr);
-    if (window_ptr == nullptr)
+    app.window.reset(
+        glfwCreateWindow(1280, 720, "Truss Optimization", nullptr, nullptr));
+    if (!app.window.has_value())
     {
         throw std::runtime_error("Failed to create GLFW window");
     }
-    app.window.reset(window_ptr);
 
     glfwMakeContextCurrent(app.window.get());
 
