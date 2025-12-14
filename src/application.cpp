@@ -195,7 +195,7 @@ struct Render_data
 
 struct Application
 {
-    Optimization_state analysis;
+    Optimization_state optimization;
     unsigned int step;
     State state;
     bool should_idle;
@@ -310,7 +310,7 @@ void glfw_mouse_button_callback(GLFWwindow *window,
             const vec2 load_node {0.8f, -0.2f};
             const vec2 load_vector {0.0f, -1.0f};
             optimization_init(
-                fixed_nodes, load_node, load_vector, app->analysis);
+                fixed_nodes, load_node, load_vector, app->optimization);
         }
     }
 }
@@ -801,7 +801,7 @@ void create_render_geometry(Render_data &render_data)
     const std::vector<vec2> fixed_nodes {{-0.8f, 0.4f}, {-0.8f, -0.4f}};
     const vec2 load_node {0.8f, -0.2f};
     const vec2 load_vector {0.0f, -1.0f};
-    optimization_init(fixed_nodes, load_node, load_vector, app.analysis);
+    optimization_init(fixed_nodes, load_node, load_vector, app.optimization);
 
     return app;
 }
@@ -852,7 +852,7 @@ void main_loop_update(Application &app)
 
     if (app.state == State::running)
     {
-        optimization_step(app.analysis);
+        optimization_step(app.optimization);
         ++app.step;
 
         if (app.should_idle)
@@ -864,15 +864,15 @@ void main_loop_update(Application &app)
 
     render_clear(app.render_data);
 
-    const auto min_force = app.analysis.axial_forces.minCoeff();
-    const auto max_force = app.analysis.axial_forces.maxCoeff();
-    for (std::size_t e {0}; e < app.analysis.elements.size(); ++e)
+    const auto min_force = app.optimization.axial_forces.minCoeff();
+    const auto max_force = app.optimization.axial_forces.maxCoeff();
+    for (std::size_t e {0}; e < app.optimization.elements.size(); ++e)
     {
-        const auto [i, j] = app.analysis.elements[e];
+        const auto [i, j] = app.optimization.elements[e];
         const auto activation =
-            app.analysis.activations[static_cast<Eigen::Index>(e)];
+            app.optimization.activations[static_cast<Eigen::Index>(e)];
         const auto force =
-            app.analysis.axial_forces[static_cast<Eigen::Index>(e)];
+            app.optimization.axial_forces[static_cast<Eigen::Index>(e)];
 
         const auto rel_force =
             force >= 0.0f ? force / max_force : force / min_force;
@@ -880,14 +880,14 @@ void main_loop_update(Application &app)
                                              : vec3 {1.0f, 0.25f, 0.25f};
         const auto color = rel_force * max_color + 1.0f - rel_force;
         render_push_line(app.render_data,
-                         {.a = app.analysis.nodes[i],
-                          .b = app.analysis.nodes[j],
+                         {.a = app.optimization.nodes[i],
+                          .b = app.optimization.nodes[j],
                           .thickness = activation * 0.03f,
                           .color = color});
     }
 
     constexpr vec3 color {0.75f, 0.75f, 0.75f};
-    constexpr float thickness {0.02f};
+    constexpr float thickness {0.015f};
 
     for (const auto &rectangle :
          {app.play_button, app.step_button, app.restart_button})
@@ -943,13 +943,48 @@ void main_loop_update(Application &app)
     render_push_line(app.render_data, {p2, p0, thickness, color});
     render_push_line(app.render_data, {p3, p4, thickness, color});
 
-    for (std::size_t i {0}; i < app.analysis.nodes.size(); ++i)
+    for (std::size_t i {0}; i < app.optimization.nodes.size(); ++i)
     {
         render_push_circle(app.render_data,
-                           {.center = app.analysis.nodes[i],
+                           {.center = app.optimization.nodes[i],
                             .radius = 0.02f,
                             .thickness = 0.02f,
                             .color = {1.0f, 1.0f, 1.0f}});
+    }
+
+    // Draw gradients
+    {
+        constexpr float young_modulus {200e9f};
+        constexpr float area {0.000025f};
+        std::vector<vec2> gradients(app.optimization.nodes.size());
+        for (std::size_t e {0}; e < app.optimization.elements.size(); ++e)
+        {
+            const auto force =
+                app.optimization.axial_forces[static_cast<Eigen::Index>(e)];
+            const auto gradient_contrib =
+                force * force /
+                (young_modulus * area *
+                 app.optimization.activations[static_cast<Eigen::Index>(e)]) *
+                app.optimization.element_directions[e];
+            const auto [i, j] = app.optimization.elements[e];
+            gradients[i] -= gradient_contrib;
+            gradients[j] += gradient_contrib;
+        }
+        const auto max_gradient = *std::max_element(
+            gradients.begin(),
+            gradients.end(),
+            [](const vec2 &u, const vec2 &v) { return norm(u) < norm(v); });
+        for (std::size_t i {0}; i < app.optimization.nodes.size(); ++i)
+        {
+            const auto a = app.optimization.nodes[i];
+            const auto b =
+                app.optimization.nodes[i] - gradients[i] / norm(max_gradient);
+            render_push_line(app.render_data,
+                             {.a = a,
+                              .b = b,
+                              .thickness = 0.015f,
+                              .color = {1.0f, 0.0f, 0.0f}});
+        }
     }
 
     glViewport(app.viewport.x,

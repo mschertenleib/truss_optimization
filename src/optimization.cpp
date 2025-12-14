@@ -215,7 +215,7 @@ void geometry_step(Optimization_state &state)
     }
 
     auto trial_positions = state.nodes;
-    float gamma {10000.0f};
+    constexpr float gamma {10000.0f};
     constexpr float move_limit {0.02f};
     constexpr unsigned int max_tries {10};
 
@@ -230,52 +230,39 @@ void geometry_step(Optimization_state &state)
     const auto old_compliance =
         state.loads.dot(state.displacements(state.free_dofs));
 
-    // FIXME
-    const auto try_analyze_accept = [&](const std::vector<vec2> &positions)
+    // FIXME: this assumes the first nodes are the fixed ones, followed by
+    // the loaded one
+    for (std::size_t i {state.fixed_dofs.size() / 2 + 1};
+         i < state.nodes.size();
+         ++i)
     {
-        const auto old_nodes = state.nodes;
-        state.nodes = positions;
-        assemble(state);
-        try
+        auto step = -gamma * gradients[i];
+        if (const auto norm_step = norm(step); norm_step > move_limit)
         {
-            solve_equilibrium_system(state);
+            step *= move_limit / norm_step;
         }
-        catch (const std::exception &e)
-        {
-            state.nodes = old_nodes;
-            return false;
-        }
-        const auto new_compliance =
-            state.loads.dot(state.displacements(state.free_dofs));
-        if (new_compliance >= old_compliance)
-        {
-            state.nodes = old_nodes;
-            return false;
-        }
-        return true;
-    };
 
-    for (unsigned int try_count {0}; try_count < max_tries; ++try_count)
+        trial_positions[i] = clamp_to_domain(state.nodes[i] + step);
+    }
+
+    const auto old_nodes = state.nodes;
+    state.nodes = trial_positions;
+    assemble(state);
+    try
     {
-        // FIXME: this assumes the first nodes are the fixed ones, followed by
-        // the loaded one
-        for (std::size_t i {state.fixed_dofs.size() / 2 + 1};
-             i < state.nodes.size();
-             ++i)
-        {
-            auto step = -gamma * gradients[i];
-            if (const auto norm_step = norm(step); norm_step > move_limit)
-            {
-                step *= move_limit / norm_step;
-            }
+        solve_equilibrium_system(state);
+    }
+    catch (const std::exception &e)
+    {
+        state.nodes = old_nodes;
+    }
 
-            trial_positions[i] = clamp_to_domain(state.nodes[i] + step);
-        }
-        if (try_analyze_accept(trial_positions))
-        {
-            break;
-        }
-        gamma *= 0.5f;
+    // TODO: this check might not be necessary?
+    const auto new_compliance =
+        state.loads.dot(state.displacements(state.free_dofs));
+    if (new_compliance >= old_compliance)
+    {
+        state.nodes = old_nodes;
     }
 }
 
