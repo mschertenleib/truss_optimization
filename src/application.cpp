@@ -154,16 +154,6 @@ struct Circle
     vec3 color;
 };
 
-struct Raster_geometry
-{
-    std::size_t line_indices_offset;
-    std::size_t line_indices_size;
-    std::size_t circle_indices_offset;
-    std::size_t circle_indices_size;
-    std::vector<Vertex> vertices;
-    std::vector<std::uint32_t> indices;
-};
-
 struct Viewport
 {
     int x;
@@ -186,6 +176,23 @@ enum struct State
     running
 };
 
+struct Render_data
+{
+    std::vector<Line> lines;
+    std::vector<Circle> circles;
+    std::size_t line_indices_offset;
+    std::size_t line_indices_size;
+    std::size_t circle_indices_offset;
+    std::size_t circle_indices_size;
+    std::vector<Vertex> vertices;
+    std::vector<std::uint32_t> indices;
+    Unique_handle<GLuint, GL_array_deleter> vao;
+    Unique_handle<GLuint, GL_array_deleter> vbo;
+    Unique_handle<GLuint, GL_array_deleter> ibo;
+    Unique_handle<GLuint, GL_deleter> line_program;
+    Unique_handle<GLuint, GL_deleter> circle_program;
+};
+
 struct Application
 {
     Optimization_state analysis;
@@ -199,14 +206,8 @@ struct Application
     int framebuffer_width;
     int framebuffer_height;
     Viewport viewport;
-    std::vector<Line> lines;
-    std::vector<Circle> circles;
-    Raster_geometry raster_geometry;
-    Unique_handle<GLuint, GL_array_deleter> vao;
-    Unique_handle<GLuint, GL_array_deleter> vbo;
-    Unique_handle<GLuint, GL_array_deleter> ibo;
-    Unique_handle<GLuint, GL_deleter> line_program;
-    Unique_handle<GLuint, GL_deleter> circle_program;
+    Render_data render_data;
+
     static constexpr vec2 world_center {0.0f, 0.0f};
     static constexpr vec2 world_size {2.0f, 2.0f};
     static constexpr Rectangle play_button {0.85f, 0.15f, 0.1f, 0.1f};
@@ -495,32 +496,32 @@ void main()
     frag_color = vec4(color, alpha);
 })";
 
-[[nodiscard]] auto create_vertex_index_buffers(const Raster_geometry &geometry)
+void create_vertex_and_index_buffers(Render_data &render_data)
 {
     GLuint vao_gl {};
     glGenVertexArrays(1, &vao_gl);
-    Unique_handle vao(vao_gl, GL_array_deleter {glDeleteVertexArrays});
-    glBindVertexArray(vao.get());
+    render_data.vao.reset(vao_gl, GL_array_deleter {glDeleteVertexArrays});
+    glBindVertexArray(render_data.vao.get());
 
     GLuint vbo_gl {};
     glGenBuffers(1, &vbo_gl);
-    Unique_handle vbo(vbo_gl, GL_array_deleter {glDeleteBuffers});
-    glBindBuffer(GL_ARRAY_BUFFER, vbo.get());
+    render_data.vbo.reset(vbo_gl, GL_array_deleter {glDeleteBuffers});
+    glBindBuffer(GL_ARRAY_BUFFER, render_data.vbo.get());
     glBufferData(
         GL_ARRAY_BUFFER,
-        static_cast<GLsizei>(geometry.vertices.size() * sizeof(Vertex)),
-        geometry.vertices.data(),
+        static_cast<GLsizei>(render_data.vertices.size() * sizeof(Vertex)),
+        render_data.vertices.data(),
         GL_DYNAMIC_DRAW);
 
     GLuint ibo_gl {};
     glGenBuffers(1, &ibo_gl);
-    Unique_handle ibo(ibo_gl, GL_array_deleter {glDeleteBuffers});
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo.get());
-    glBufferData(
-        GL_ELEMENT_ARRAY_BUFFER,
-        static_cast<GLsizei>(geometry.indices.size() * sizeof(std::uint32_t)),
-        geometry.indices.data(),
-        GL_STATIC_DRAW);
+    render_data.ibo.reset(ibo_gl, GL_array_deleter {glDeleteBuffers});
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, render_data.ibo.get());
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                 static_cast<GLsizei>(render_data.indices.size() *
+                                      sizeof(std::uint32_t)),
+                 render_data.indices.data(),
+                 GL_STATIC_DRAW);
 
     glVertexAttribPointer(0,
                           sizeof(Vertex::position) / sizeof(float),
@@ -545,13 +546,11 @@ void main()
     glEnableVertexAttribArray(2);
 
     glBindVertexArray(0);
-
-    return std::tuple {std::move(vao), std::move(vbo), std::move(ibo)};
 }
 
 void update_vertex_buffer(GLuint vao,
                           GLuint vbo,
-                          const Raster_geometry &geometry)
+                          const Render_data &render_data)
 {
     glBindVertexArray(vao);
 
@@ -559,8 +558,8 @@ void update_vertex_buffer(GLuint vao,
     glBufferSubData(
         GL_ARRAY_BUFFER,
         0,
-        static_cast<GLsizei>(geometry.vertices.size() * sizeof(Vertex)),
-        geometry.vertices.data());
+        static_cast<GLsizei>(render_data.vertices.size() * sizeof(Vertex)),
+        render_data.vertices.data());
 
     glBindVertexArray(0);
 }
@@ -644,15 +643,13 @@ vec4(textColor, a);
     */
 }
 
-void create_raster_geometry(const std::vector<Line> &lines,
-                            const std::vector<Circle> &circles,
-                            Raster_geometry &geometry)
+void create_render_geometry(Render_data &render_data)
 {
-    geometry.vertices.clear();
-    geometry.indices.clear();
+    render_data.vertices.clear();
+    render_data.indices.clear();
 
-    geometry.line_indices_offset = geometry.indices.size();
-    for (const auto &line : lines)
+    render_data.line_indices_offset = render_data.indices.size();
+    for (const auto &line : render_data.lines)
     {
         const auto line_vec = line.b - line.a;
         const auto line_length = norm(line_vec);
@@ -667,29 +664,31 @@ void create_raster_geometry(const std::vector<Line> &lines,
         const auto aspect_ratio = line_length / line.thickness;
 
         const auto first_index =
-            static_cast<std::uint32_t>(geometry.vertices.size());
-        geometry.vertices.push_back({start_left,
-                                     {-0.5f, 0.5f, -aspect_ratio - 0.5f, 0.0f},
-                                     line.color});
-        geometry.vertices.push_back({start_right,
-                                     {0.5f, 0.5f, -aspect_ratio - 0.5f, 0.0f},
-                                     line.color});
-        geometry.vertices.push_back(
+            static_cast<std::uint32_t>(render_data.vertices.size());
+        render_data.vertices.push_back(
+            {start_left,
+             {-0.5f, 0.5f, -aspect_ratio - 0.5f, 0.0f},
+             line.color});
+        render_data.vertices.push_back(
+            {start_right,
+             {0.5f, 0.5f, -aspect_ratio - 0.5f, 0.0f},
+             line.color});
+        render_data.vertices.push_back(
             {end_right, {0.5f, -aspect_ratio - 0.5f, 0.5f, 0.0f}, line.color});
-        geometry.vertices.push_back(
+        render_data.vertices.push_back(
             {end_left, {-0.5f, -aspect_ratio - 0.5f, 0.5f, 0.0f}, line.color});
-        geometry.indices.push_back(first_index + 0);
-        geometry.indices.push_back(first_index + 1);
-        geometry.indices.push_back(first_index + 2);
-        geometry.indices.push_back(first_index + 0);
-        geometry.indices.push_back(first_index + 2);
-        geometry.indices.push_back(first_index + 3);
+        render_data.indices.push_back(first_index + 0);
+        render_data.indices.push_back(first_index + 1);
+        render_data.indices.push_back(first_index + 2);
+        render_data.indices.push_back(first_index + 0);
+        render_data.indices.push_back(first_index + 2);
+        render_data.indices.push_back(first_index + 3);
     }
-    geometry.line_indices_size =
-        geometry.indices.size() - geometry.line_indices_offset;
+    render_data.line_indices_size =
+        render_data.indices.size() - render_data.line_indices_offset;
 
-    geometry.circle_indices_offset = geometry.indices.size();
-    for (const auto &circle : circles)
+    render_data.circle_indices_offset = render_data.indices.size();
+    for (const auto &circle : render_data.circles)
     {
         const auto half_side = circle.radius + 0.5f * circle.thickness;
         const auto bottom_left = circle.center + vec2 {-half_side, -half_side};
@@ -699,24 +698,24 @@ void create_raster_geometry(const std::vector<Line> &lines,
         const auto rel_thickness = circle.thickness / half_side;
 
         const auto first_index =
-            static_cast<std::uint32_t>(geometry.vertices.size());
-        geometry.vertices.push_back(
+            static_cast<std::uint32_t>(render_data.vertices.size());
+        render_data.vertices.push_back(
             {bottom_left, {-1.0, -1.0f, rel_thickness, 0.0f}, circle.color});
-        geometry.vertices.push_back(
+        render_data.vertices.push_back(
             {bottom_right, {1.0f, -1.0f, rel_thickness, 0.0f}, circle.color});
-        geometry.vertices.push_back(
+        render_data.vertices.push_back(
             {top_right, {1.0f, 1.0f, rel_thickness, 0.0f}, circle.color});
-        geometry.vertices.push_back(
+        render_data.vertices.push_back(
             {top_left, {-1.0f, 1.0f, rel_thickness, 0.0f}, circle.color});
-        geometry.indices.push_back(first_index + 0);
-        geometry.indices.push_back(first_index + 1);
-        geometry.indices.push_back(first_index + 2);
-        geometry.indices.push_back(first_index + 0);
-        geometry.indices.push_back(first_index + 2);
-        geometry.indices.push_back(first_index + 3);
+        render_data.indices.push_back(first_index + 0);
+        render_data.indices.push_back(first_index + 1);
+        render_data.indices.push_back(first_index + 2);
+        render_data.indices.push_back(first_index + 0);
+        render_data.indices.push_back(first_index + 2);
+        render_data.indices.push_back(first_index + 3);
     }
-    geometry.circle_indices_size =
-        geometry.indices.size() - geometry.circle_indices_offset;
+    render_data.circle_indices_size =
+        render_data.indices.size() - render_data.circle_indices_offset;
 }
 
 [[nodiscard]] Application init_application()
@@ -790,9 +789,9 @@ void create_raster_geometry(const std::vector<Line> &lines,
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    app.line_program = create_program(
+    app.render_data.line_program = create_program(
         glsl_version, vertex_shader_code, line_fragment_shader_code);
-    app.circle_program = create_program(
+    app.render_data.circle_program = create_program(
         glsl_version, vertex_shader_code, circle_fragment_shader_code);
 
     // create_font_texture();
@@ -807,25 +806,42 @@ void create_raster_geometry(const std::vector<Line> &lines,
     return app;
 }
 
-void draw_geometry(const Application &app)
+void render_clear(Render_data &render_data)
 {
-    glBindVertexArray(app.vao.get());
+    render_data.lines.clear();
+    render_data.circles.clear();
+}
 
-    glUseProgram(app.line_program.get());
-    glDrawElements(
-        GL_TRIANGLES,
-        static_cast<GLsizei>(app.raster_geometry.line_indices_size),
-        GL_UNSIGNED_INT,
-        reinterpret_cast<void *>(app.raster_geometry.line_indices_offset *
-                                 sizeof(std::uint32_t)));
+void render_push_line(Render_data &render_data, const Line &line)
+{
+    render_data.lines.push_back(line);
+}
 
-    glUseProgram(app.circle_program.get());
-    glDrawElements(
-        GL_TRIANGLES,
-        static_cast<GLsizei>(app.raster_geometry.circle_indices_size),
-        GL_UNSIGNED_INT,
-        reinterpret_cast<void *>(app.raster_geometry.circle_indices_offset *
-                                 sizeof(std::uint32_t)));
+void render_push_circle(Render_data &render_data, const Circle &circle)
+{
+    render_data.circles.push_back(circle);
+}
+
+void render(Render_data &render_data)
+{
+    create_render_geometry(render_data);
+    create_vertex_and_index_buffers(render_data);
+
+    glBindVertexArray(render_data.vao.get());
+
+    glUseProgram(render_data.line_program.get());
+    glDrawElements(GL_TRIANGLES,
+                   static_cast<GLsizei>(render_data.line_indices_size),
+                   GL_UNSIGNED_INT,
+                   reinterpret_cast<void *>(render_data.line_indices_offset *
+                                            sizeof(std::uint32_t)));
+
+    glUseProgram(render_data.circle_program.get());
+    glDrawElements(GL_TRIANGLES,
+                   static_cast<GLsizei>(render_data.circle_indices_size),
+                   GL_UNSIGNED_INT,
+                   reinterpret_cast<void *>(render_data.circle_indices_offset *
+                                            sizeof(std::uint32_t)));
 
     glBindVertexArray(0);
 }
@@ -846,9 +862,10 @@ void main_loop_update(Application &app)
         }
     }
 
+    render_clear(app.render_data);
+
     const auto min_force = app.analysis.axial_forces.minCoeff();
     const auto max_force = app.analysis.axial_forces.maxCoeff();
-    app.lines.clear();
     for (std::size_t e {0}; e < app.analysis.elements.size(); ++e)
     {
         const auto [i, j] = app.analysis.elements[e];
@@ -862,10 +879,11 @@ void main_loop_update(Application &app)
         const auto max_color = force >= 0.0f ? vec3 {0.25f, 0.25f, 1.0f}
                                              : vec3 {1.0f, 0.25f, 0.25f};
         const auto color = rel_force * max_color + 1.0f - rel_force;
-        app.lines.push_back({.a = app.analysis.nodes[i],
-                             .b = app.analysis.nodes[j],
-                             .thickness = activation * 0.03f,
-                             .color = color});
+        render_push_line(app.render_data,
+                         {.a = app.analysis.nodes[i],
+                          .b = app.analysis.nodes[j],
+                          .thickness = activation * 0.03f,
+                          .color = color});
     }
 
     constexpr vec3 color {0.75f, 0.75f, 0.75f};
@@ -878,10 +896,10 @@ void main_loop_update(Application &app)
         const auto p1 = rectangle.pos + vec2 {rectangle.size.x, 0.0f};
         const auto p2 = rectangle.pos + rectangle.size;
         const auto p3 = rectangle.pos + vec2 {0.0f, rectangle.size.y};
-        app.lines.emplace_back(p0, p1, thickness, color);
-        app.lines.emplace_back(p1, p2, thickness, color);
-        app.lines.emplace_back(p2, p3, thickness, color);
-        app.lines.emplace_back(p3, p0, thickness, color);
+        render_push_line(app.render_data, {p0, p1, thickness, color});
+        render_push_line(app.render_data, {p1, p2, thickness, color});
+        render_push_line(app.render_data, {p2, p3, thickness, color});
+        render_push_line(app.render_data, {p3, p0, thickness, color});
     }
 
     if (app.state == State::running)
@@ -894,8 +912,8 @@ void main_loop_update(Application &app)
             app.play_button.pos + app.play_button.size * vec2 {0.7f, 0.3f};
         const auto p3 =
             app.play_button.pos + app.play_button.size * vec2 {0.7f, 0.7f};
-        app.lines.emplace_back(p0, p1, thickness, color);
-        app.lines.emplace_back(p2, p3, thickness, color);
+        render_push_line(app.render_data, {p0, p1, thickness, color});
+        render_push_line(app.render_data, {p2, p3, thickness, color});
     }
     else
     {
@@ -905,9 +923,9 @@ void main_loop_update(Application &app)
             app.play_button.pos + app.play_button.size * vec2 {0.3f, 0.8f};
         const auto p2 =
             app.play_button.pos + app.play_button.size * vec2 {0.3f, 0.2f};
-        app.lines.emplace_back(p0, p1, thickness, color);
-        app.lines.emplace_back(p1, p2, thickness, color);
-        app.lines.emplace_back(p2, p0, thickness, color);
+        render_push_line(app.render_data, {p0, p1, thickness, color});
+        render_push_line(app.render_data, {p1, p2, thickness, color});
+        render_push_line(app.render_data, {p2, p0, thickness, color});
     }
 
     const auto p0 =
@@ -920,23 +938,19 @@ void main_loop_update(Application &app)
         app.step_button.pos + app.step_button.size * vec2 {0.7f, 0.2f};
     const auto p4 =
         app.step_button.pos + app.step_button.size * vec2 {0.7f, 0.8f};
-    app.lines.emplace_back(p0, p1, thickness, color);
-    app.lines.emplace_back(p1, p2, thickness, color);
-    app.lines.emplace_back(p2, p0, thickness, color);
-    app.lines.emplace_back(p3, p4, thickness, color);
+    render_push_line(app.render_data, {p0, p1, thickness, color});
+    render_push_line(app.render_data, {p1, p2, thickness, color});
+    render_push_line(app.render_data, {p2, p0, thickness, color});
+    render_push_line(app.render_data, {p3, p4, thickness, color});
 
-    app.circles.clear();
     for (std::size_t i {0}; i < app.analysis.nodes.size(); ++i)
     {
-        app.circles.push_back({.center = app.analysis.nodes[i],
-                               .radius = 0.02f,
-                               .thickness = 0.02f,
-                               .color = {1.0f, 1.0f, 1.0f}});
+        render_push_circle(app.render_data,
+                           {.center = app.analysis.nodes[i],
+                            .radius = 0.02f,
+                            .thickness = 0.02f,
+                            .color = {1.0f, 1.0f, 1.0f}});
     }
-
-    create_raster_geometry(app.lines, app.circles, app.raster_geometry);
-    std::tie(app.vao, app.vbo, app.ibo) =
-        create_vertex_index_buffers(app.raster_geometry);
 
     glViewport(app.viewport.x,
                app.viewport.y,
@@ -944,7 +958,7 @@ void main_loop_update(Application &app)
                app.viewport.height);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    draw_geometry(app);
+    render(app.render_data);
 
 #ifndef __EMSCRIPTEN__
     glfwSwapBuffers(app.window.get());

@@ -114,6 +114,18 @@ public:
         m_handle = std::forward<HH>(handle);
     }
 
+    template <typename HH, typename DD>
+        requires std::assignable_from<H &, HH &&> &&
+                 std::assignable_from<D &, DD &&>
+    constexpr void reset(HH &&handle, DD &&deleter) noexcept(
+        noexcept(reset()) && std::is_nothrow_assignable_v<H &, HH &&> &&
+        std::is_nothrow_assignable_v<D &, DD &&>)
+    {
+        reset();
+        m_handle = std::forward<HH>(handle);
+        m_deleter = std::forward<DD>(deleter);
+    }
+
     constexpr H
     release() noexcept(std::is_nothrow_move_constructible_v<H> &&
                        std::is_nothrow_assignable_v<H &, decltype(null_handle)>)

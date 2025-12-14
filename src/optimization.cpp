@@ -113,6 +113,7 @@ void assemble(Optimization_state &state)
 
 void solve_equilibrium_system(Optimization_state &state)
 {
+    // TODO: test different solvers
     Eigen::SimplicialLDLT<Eigen::SparseMatrix<float>, Eigen::Lower> solver;
     solver.compute(state.stiffness_matrix);
     solver.factorize(state.stiffness_matrix);
