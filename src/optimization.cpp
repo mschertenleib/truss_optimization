@@ -203,21 +203,31 @@ void geometry_step(Optimization_state &state)
     std::vector<vec2> gradients(state.nodes.size());
     for (std::size_t e {0}; e < state.elements.size(); ++e)
     {
-        const auto force = state.axial_forces[static_cast<Eigen::Index>(e)];
+        const auto t = state.element_directions[e];
+        const auto L = state.lengths[static_cast<Eigen::Index>(e)];
+        const auto [node_i, node_j] = state.elements[e];
+        const vec2 u_i {state.displacements(2 * node_i),
+                        state.displacements(2 * node_i + 1)};
+        const vec2 u_j {state.displacements(2 * node_j),
+                        state.displacements(2 * node_j + 1)};
+        const auto u_rel = u_j - u_i;
+        const auto s = dot(t, u_rel);
+        const vec2 P_u_rel {(1.0f - t.x * t.x) * u_rel.x - t.x * t.y * u_rel.y,
+                            -t.x * t.y * u_rel.x +
+                                (1.0f - t.y * t.y) * u_rel.y};
+
         const auto gradient_contrib =
-            force * force /
-            (young_modulus * area *
-             state.activations[static_cast<Eigen::Index>(e)]) *
-            state.element_directions[e];
-        const auto [i, j] = state.elements[e];
-        gradients[i] -= gradient_contrib;
-        gradients[j] += gradient_contrib;
+            young_modulus * area *
+            state.activations[static_cast<Eigen::Index>(e)] / (L * L) *
+            (t * (s * s) - (2.0f * s) * P_u_rel);
+
+        gradients[node_i] -= gradient_contrib;
+        gradients[node_j] += gradient_contrib;
     }
 
     auto trial_positions = state.nodes;
     constexpr float gamma {10000.0f};
     constexpr float move_limit {0.02f};
-    constexpr unsigned int max_tries {10};
 
     constexpr auto clamp_to_domain = [](const vec2 &pos)
     {

@@ -189,6 +189,76 @@ struct vec<4>
     return {f / v.x, f / v.y, f / v.z};
 }
 
+[[nodiscard]] constexpr vec4 operator+(const vec4 &v) noexcept
+{
+    return v;
+}
+
+[[nodiscard]] constexpr vec4 operator-(const vec4 &v) noexcept
+{
+    return {-v.x, -v.y, -v.z, -v.w};
+}
+
+[[nodiscard]] constexpr vec4 operator+(const vec4 &u, const vec4 &v) noexcept
+{
+    return {u.x + v.x, u.y + v.y, u.z + v.z, u.w + v.w};
+}
+
+[[nodiscard]] constexpr vec4 operator-(const vec4 &u, const vec4 &v) noexcept
+{
+    return {u.x - v.x, u.y - v.y, u.z - v.z, u.w - v.w};
+}
+
+[[nodiscard]] constexpr vec4 operator*(const vec4 &u, const vec4 &v) noexcept
+{
+    return {u.x * v.x, u.y * v.y, u.z * v.z, u.w * v.w};
+}
+
+[[nodiscard]] constexpr vec4 operator/(const vec4 &u, const vec4 &v) noexcept
+{
+    return {u.x / v.x, u.y / v.y, u.z / v.z, u.w / v.w};
+}
+
+[[nodiscard]] constexpr vec4 operator+(const vec4 &v, float f) noexcept
+{
+    return {v.x + f, v.y + f, v.z + f, v.w + f};
+}
+
+[[nodiscard]] constexpr vec4 operator-(const vec4 &v, float f) noexcept
+{
+    return {v.x - f, v.y - f, v.z - f, v.w - f};
+}
+
+[[nodiscard]] constexpr vec4 operator*(const vec4 &v, float f) noexcept
+{
+    return {v.x * f, v.y * f, v.z * f, v.w * f};
+}
+
+[[nodiscard]] constexpr vec4 operator/(const vec4 &v, float f) noexcept
+{
+    return {v.x / f, v.y / f, v.z / f, v.w / f};
+}
+
+[[nodiscard]] constexpr vec4 operator+(float f, const vec4 &v) noexcept
+{
+    return {f + v.x, f + v.y, f + v.z, f + v.w};
+}
+
+[[nodiscard]] constexpr vec4 operator-(float f, const vec4 &v) noexcept
+{
+    return {f - v.x, f - v.y, f - v.z, f - v.w};
+}
+
+[[nodiscard]] constexpr vec4 operator*(float f, const vec4 &v) noexcept
+{
+    return {f * v.x, f * v.y, f * v.z, f * v.w};
+}
+
+[[nodiscard]] constexpr vec4 operator/(float f, const vec4 &v) noexcept
+{
+    return {f / v.x, f / v.y, f / v.z, f / v.w};
+}
+
 template <unsigned int N>
 constexpr vec<N> &operator+=(vec<N> &u, const vec<N> &v) noexcept
 {
@@ -253,6 +323,11 @@ constexpr vec<N> &operator/=(vec<N> &v, float f) noexcept
 [[nodiscard]] constexpr float dot(const vec3 &u, const vec3 &v) noexcept
 {
     return u.x * v.x + u.y * v.y + u.z * v.z;
+}
+
+[[nodiscard]] constexpr float dot(const vec4 &u, const vec4 &v) noexcept
+{
+    return u.x * v.x + u.y * v.y + u.z * v.z + u.w * v.w;
 }
 
 [[nodiscard]] constexpr float cross(const vec2 &u, const vec2 &v) noexcept
