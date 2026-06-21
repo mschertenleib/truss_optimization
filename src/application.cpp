@@ -34,6 +34,7 @@
 #include <numbers>
 #include <optional>
 #include <random>
+#include <ranges>
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
@@ -306,11 +307,7 @@ void glfw_mouse_button_callback(GLFWwindow *window,
         else if (is_in_rectangle(mouse_pos, app->restart_button))
         {
             app->step = 0;
-            const std::vector<vec2> fixed_nodes {{-0.8f, 0.4f}, {-0.8f, -0.4f}};
-            const vec2 load_node {0.8f, -0.2f};
-            const vec2 load_vector {0.0f, -1.0f};
-            optimization_init(
-                fixed_nodes, load_node, load_vector, app->optimization);
+            optimization_create_problem(app->optimization);
         }
     }
 }
@@ -798,10 +795,7 @@ void create_render_geometry(Render_data &render_data)
 
     app.state = State::idle;
 
-    const std::vector<vec2> fixed_nodes {{-0.8f, 0.4f}, {-0.8f, -0.4f}};
-    const vec2 load_node {0.8f, -0.2f};
-    const vec2 load_vector {0.0f, -1.0f};
-    optimization_init(fixed_nodes, load_node, load_vector, app.optimization);
+    optimization_create_problem(app.optimization);
 
     return app;
 }
@@ -864,18 +858,17 @@ void main_loop_update(Application &app)
 
     render_clear(app.render_data);
 
-    const auto min_force = app.optimization.axial_forces.minCoeff();
-    const auto max_force = app.optimization.axial_forces.maxCoeff();
+    const auto [min_force, max_force] =
+        std::ranges::minmax_element(app.optimization.axial_forces);
+
     for (std::size_t e {0}; e < app.optimization.elements.size(); ++e)
     {
         const auto [i, j] = app.optimization.elements[e];
-        const auto activation =
-            app.optimization.activations[static_cast<Eigen::Index>(e)];
-        const auto force =
-            app.optimization.axial_forces[static_cast<Eigen::Index>(e)];
+        const auto activation = app.optimization.activations[e];
+        const auto force = app.optimization.axial_forces[e];
 
         const auto rel_force =
-            force >= 0.0f ? force / max_force : force / min_force;
+            force >= 0.0f ? force / *max_force : force / *min_force;
         const auto max_color = force >= 0.0f ? vec3 {0.25f, 0.25f, 1.0f}
                                              : vec3 {1.0f, 0.25f, 0.25f};
         const auto color = rel_force * max_color + 1.0f - rel_force;
@@ -947,45 +940,28 @@ void main_loop_update(Application &app)
     {
         render_push_circle(app.render_data,
                            {.center = app.optimization.nodes[i],
-                            .radius = 0.02f,
+                            .radius = 0.0f,
                             .thickness = 0.02f,
                             .color = {1.0f, 1.0f, 1.0f}});
     }
 
-    // Draw gradients
+    // Draw gradient directions
+    /*if (!app.optimization.gradients.empty())
     {
-        constexpr float young_modulus {200e9f};
-        constexpr float area {0.000025f};
-        std::vector<vec2> gradients(app.optimization.nodes.size());
-        for (std::size_t e {0}; e < app.optimization.elements.size(); ++e)
-        {
-            const auto force =
-                app.optimization.axial_forces[static_cast<Eigen::Index>(e)];
-            const auto gradient_contrib =
-                force * force /
-                (young_modulus * area *
-                 app.optimization.activations[static_cast<Eigen::Index>(e)]) *
-                app.optimization.element_directions[e];
-            const auto [i, j] = app.optimization.elements[e];
-            gradients[i] -= gradient_contrib;
-            gradients[j] += gradient_contrib;
-        }
-        const auto max_gradient = *std::max_element(
-            gradients.begin(),
-            gradients.end(),
-            [](const vec2 &u, const vec2 &v) { return norm(u) < norm(v); });
+        //const auto max_gradient = *std::ranges::max_element(
+        //    app.optimization.gradients,
+        //    [](const vec2 &a, const vec2 &b) { return norm(a) < norm(b); });
         for (std::size_t i {0}; i < app.optimization.nodes.size(); ++i)
         {
-            const auto a = app.optimization.nodes[i];
-            const auto b =
-                app.optimization.nodes[i] - gradients[i] / norm(max_gradient);
-            render_push_line(app.render_data,
-                             {.a = a,
-                              .b = b,
-                              .thickness = 0.015f,
-                              .color = {1.0f, 0.0f, 0.0f}});
+            render_push_line(
+                app.render_data,
+                {.a = app.optimization.nodes[i],
+                 .b = app.optimization.nodes[i] -
+                      0.07f * normalize(app.optimization.gradients[i]),
+                 .thickness = 0.015f,
+                 .color = {1.0f, 1.0f, 1.0f}});
         }
-    }
+    }*/
 
     glViewport(app.viewport.x,
                app.viewport.y,

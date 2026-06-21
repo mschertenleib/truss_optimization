@@ -19,23 +19,26 @@ struct Optimization_state
 {
     std::vector<vec2> nodes;
     std::vector<Element> elements;
-    Eigen::VectorXf activations;
-    std::vector<float> stiffness_constants;
-    std::vector<vec2> element_directions;
-    Eigen::VectorXf lengths;
     std::vector<std::uint32_t> fixed_dofs;
     std::vector<std::uint32_t> free_dofs;
+    std::vector<std::uint32_t> all_to_free_dofs;
+    std::vector<std::uint32_t> immovable_dofs;
+
+    std::vector<float> activations;
+
+    std::vector<vec2> element_directions;
+    std::vector<float> element_lengths;
+
     Eigen::SparseMatrix<float> stiffness_matrix;
     Eigen::VectorXf loads;
     Eigen::VectorXf displacements;
-    Eigen::VectorXf axial_forces;
-    Eigen::VectorXf energies;
+
+    std::vector<float> axial_forces;
+    std::vector<float> energies;
+    std::vector<vec2> gradients;
 };
 
-void optimization_init(const std::vector<vec2> &fixed_nodes,
-                       const vec2 &load_node,
-                       const vec2 &load_vector,
-                       Optimization_state &state);
+void optimization_create_problem(Optimization_state &state);
 void optimization_step(Optimization_state &state);
 
 #endif
