@@ -861,13 +861,19 @@ void main_loop_update(Application &app)
     {
         const auto [i, j] = app.optimization.elements[e];
         const auto activation = app.optimization.activations[e];
-        const auto force = app.optimization.axial_forces[e];
 
-        const auto rel_force =
-            force >= 0.0f ? force / *max_force : force / *min_force;
-        const auto max_color = force >= 0.0f ? vec3 {0.25f, 0.25f, 1.0f}
-                                             : vec3 {1.0f, 0.25f, 0.25f};
-        const auto color = rel_force * max_color + 1.0f - rel_force;
+        vec3 color {1.0f, 1.0f, 1.0f};
+        if (app.optimization.axial_forces.size() ==
+            app.optimization.elements.size())
+        {
+            const auto force = app.optimization.axial_forces[e];
+            const auto rel_force =
+                force >= 0.0f ? force / *max_force : force / *min_force;
+            const auto max_color = force >= 0.0f ? vec3 {0.25f, 0.25f, 1.0f}
+                                                 : vec3 {1.0f, 0.25f, 0.25f};
+            color = rel_force * max_color + 1.0f - rel_force;
+        }
+
         render_push_line(app.render_data,
                          {.a = app.optimization.nodes[i],
                           .b = app.optimization.nodes[j],
@@ -932,14 +938,14 @@ void main_loop_update(Application &app)
     render_push_line(app.render_data, {p2, p0, thickness, color});
     render_push_line(app.render_data, {p3, p4, thickness, color});
 
-    for (std::size_t i {0}; i < app.optimization.nodes.size(); ++i)
+    /*for (std::size_t i {0}; i < app.optimization.nodes.size(); ++i)
     {
         render_push_circle(app.render_data,
                            {.center = app.optimization.nodes[i],
                             .radius = 0.0f,
                             .thickness = 0.02f,
                             .color = {1.0f, 1.0f, 1.0f}});
-    }
+    }*/
 
     // Draw gradient directions
     /*if (!app.optimization.gradients.empty())

@@ -430,6 +430,7 @@ void optimization_create_problem(Optimization_state &state)
 {
     std::vector<vec2> nodes;
 
+#if 0
     nodes.emplace_back(-0.8f, -0.4f);
     nodes.emplace_back(-0.8f, 0.4f);
     const std::vector<std::uint32_t> fixed_dofs {0, 1, 2, 3};
@@ -459,6 +460,67 @@ void optimization_create_problem(Optimization_state &state)
             elements.emplace_back(i, j);
         }
     }*/
+#else
+
+    constexpr unsigned int num_x {20};
+    constexpr unsigned int num_y {20};
+    nodes.reserve(num_x * num_y);
+    for (unsigned int iy {0}; iy < num_y; ++iy)
+    {
+        for (unsigned int ix {0}; ix < num_x; ++ix)
+        {
+            const auto x = -0.8f + static_cast<float>(ix) / (num_x - 1) * 1.6f;
+            const auto y = -0.8f + static_cast<float>(iy) / (num_y - 1) * 1.6f;
+            nodes.emplace_back(x, y);
+        }
+    }
+
+    const auto node = [num_x](std::uint32_t iy, std::uint32_t ix)
+    { return iy * num_x + ix; };
+
+    const auto dof =
+        [&node](std::uint32_t iy, std::uint32_t ix, std::uint32_t axis)
+    { return node(iy, ix) * 2 + axis; };
+
+    const std::vector<std::uint32_t> fixed_dofs {dof(num_y / 4, 0, 0),
+                                                 dof(num_y / 4, 0, 1),
+                                                 dof(num_y * 3 / 4, 0, 0),
+                                                 dof(num_y * 3 / 4, 0, 1)};
+    const std::vector<std::uint32_t> loaded_dofs {dof(num_y / 2, num_x - 1, 0),
+                                                  dof(num_y / 2, num_x - 1, 1)};
+    const std::vector<float> loads {0.0f, -1.0f};
+    std::vector<std::uint32_t> immovable_dofs;
+    immovable_dofs.insert(
+        immovable_dofs.end(), fixed_dofs.begin(), fixed_dofs.end());
+    immovable_dofs.insert(
+        immovable_dofs.end(), loaded_dofs.begin(), loaded_dofs.end());
+    std::ranges::sort(immovable_dofs);
+
+    std::vector<Element> elements;
+    for (std::uint32_t iy {0}; iy < num_y; ++iy)
+    {
+        for (std::uint32_t ix {0}; ix < num_x; ++ix)
+        {
+            if (ix + 1 < num_x)
+                elements.emplace_back(node(iy, ix), node(iy, ix + 1));
+            if (iy + 1 < num_y)
+                elements.emplace_back(node(iy, ix), node(iy + 1, ix));
+            if ((ix + 1 < num_x) && (iy + 1 < num_y))
+                elements.emplace_back(node(iy, ix), node(iy + 1, ix + 1));
+            if ((ix > 0) && (iy + 1 < num_y))
+                elements.emplace_back(node(iy, ix), node(iy + 1, ix - 1));
+            if ((ix + 2 < num_x) && (iy + 1 < num_y))
+                elements.emplace_back(node(iy, ix), node(iy + 1, ix + 2));
+            if ((ix + 1 < num_x) && (iy + 2 < num_y))
+                elements.emplace_back(node(iy, ix), node(iy + 2, ix + 1));
+            if ((ix > 0) && (iy + 2 < num_y))
+                elements.emplace_back(node(iy, ix), node(iy + 2, ix - 1));
+            if ((ix > 1) && (iy + 1 < num_y))
+                elements.emplace_back(node(iy, ix), node(iy + 1, ix - 2));
+        }
+    }
+
+#endif
 
     optimization_init(
         nodes, elements, fixed_dofs, loaded_dofs, loads, immovable_dofs, state);
