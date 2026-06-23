@@ -9,6 +9,7 @@
 #include <cmath>
 #include <format>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <random>
 #include <ranges>
@@ -21,7 +22,7 @@ constexpr float area {0.000025f};
 constexpr float min_activation {1e-3f};
 constexpr float max_length {8.0f};
 
-constexpr auto invalid_index = static_cast<std::uint32_t>(-1);
+constexpr auto invalid_index = std::numeric_limits<std::uint32_t>::max();
 
 [[nodiscard]] constexpr const char *
 to_string(Eigen::ComputationInfo computation_info) noexcept
@@ -36,85 +37,169 @@ to_string(Eigen::ComputationInfo computation_info) noexcept
     return "UNDEFINED";
 }
 
-void assemble(Optimization_state &state)
+void rebuild_sparsity(Optimization_state &state)
 {
-    assert(state.elements.size() == state.activations.size());
-
-    std::vector<Eigen::Triplet<float>> triplets;
-
+    state.element_k_indices.resize(state.elements.size());
     state.element_lengths.resize(state.elements.size());
     state.element_directions.resize(state.elements.size());
+
+    std::vector<Eigen::Triplet<float>> triplets;
+    triplets.reserve(state.elements.size() * 16);
+
+    std::vector<std::array<std::uint32_t, 4>> element_dofs;
+    element_dofs.reserve(state.elements.size());
 
     for (std::size_t e {0}; e < state.elements.size(); ++e)
     {
         const auto [node_i, node_j] = state.elements[e];
-        const auto activation = state.activations[e];
-        const auto vec = state.nodes[node_j] - state.nodes[node_i];
-        const auto length = norm(vec);
-        state.element_lengths[e] = length;
-        const auto dir = vec / length;
-        state.element_directions[e] = dir;
-        const auto stiffness_constant =
-            activation * (young_modulus * area) / length;
-
-        const auto [c, s] = dir;
-        const float element_stiffness_matrix[4][4] {
-            {c * c, c * s, -c * c, -c * s},
-            {c * s, s * s, -c * s, -s * s},
-            {-c * c, -c * s, c * c, c * s},
-            {-c * s, -s * s, c * s, s * s}};
-
-        const std::uint32_t dof_indices[4] {
-            state.all_to_free_dofs[2 * node_i],
+        const std::array<std::uint32_t, 4> e_dofs {
+            state.all_to_free_dofs[2 * node_i + 0],
             state.all_to_free_dofs[2 * node_i + 1],
-            state.all_to_free_dofs[2 * node_j],
+            state.all_to_free_dofs[2 * node_j + 0],
             state.all_to_free_dofs[2 * node_j + 1]};
-        for (unsigned int a {0}; a < 4; ++a)
+        element_dofs.push_back(e_dofs);
+
+        for (std::size_t a {0}; a < 4; ++a)
         {
-            for (unsigned int b {0}; b < 4; ++b)
+            if (e_dofs[a] == invalid_index)
             {
-                if (dof_indices[a] != invalid_index &&
-                    dof_indices[b] != invalid_index)
+                continue;
+            }
+
+            for (std::size_t b {0}; b < 4; ++b)
+            {
+                if (e_dofs[b] == invalid_index)
                 {
-                    triplets.emplace_back(dof_indices[a],
-                                          dof_indices[b],
-                                          stiffness_constant *
-                                              element_stiffness_matrix[a][b]);
+                    continue;
                 }
+
+                // NOTE: the value is irrelevant, only the sparsity matters
+                triplets.emplace_back(e_dofs[a], e_dofs[b], 1.0f);
             }
         }
     }
 
-    state.stiffness_matrix.setZero();
     state.stiffness_matrix.resize(
         static_cast<Eigen::Index>(state.free_dofs.size()),
         static_cast<Eigen::Index>(state.free_dofs.size()));
-    state.stiffness_matrix.setFromTriplets(triplets.cbegin(), triplets.cend());
-    state.stiffness_matrix.prune(0.0f);
+    state.stiffness_matrix.setFromTriplets(triplets.begin(), triplets.end());
+    state.stiffness_matrix.makeCompressed();
+
+    // Make the inner indices sorted so we can binary-search them
+    // TODO: if our connectivity is very sparse, it might be faster to not sort
+    // and do a linear search instead
+    state.stiffness_matrix.sortInnerIndices();
+
+    const auto *const outer = state.stiffness_matrix.outerIndexPtr();
+    const auto *const inner = state.stiffness_matrix.innerIndexPtr();
+
+    for (std::size_t e {0}; e < state.elements.size(); ++e)
+    {
+        const auto &e_dofs = element_dofs[e];
+        auto &k_indices = state.element_k_indices[e];
+
+        for (std::size_t a {0}; a < 4; ++a)
+        {
+            for (std::size_t b {0}; b < 4; ++b)
+            {
+                const auto row = e_dofs[a];
+                const auto col = e_dofs[b];
+                const auto local_flat_index = 4 * a + b;
+
+                if (row == invalid_index || col == invalid_index)
+                {
+                    k_indices[local_flat_index] = invalid_index;
+                    continue;
+                }
+
+                // ColMajor: search within the column's inner-index range
+                const auto begin = outer[col];
+                const auto end = outer[col + 1];
+                const auto *const it =
+                    std::lower_bound(inner + begin, inner + end, row);
+                assert(it != inner + end &&
+                       *it == static_cast<Eigen::Index>(row));
+
+                k_indices[local_flat_index] =
+                    static_cast<std::uint32_t>(it - inner);
+            }
+        }
+    }
+}
+
+void assemble_stiffness_matrix(Optimization_state &state)
+{
+    assert(state.elements.size() == state.element_lengths.size());
+    assert(state.elements.size() == state.element_directions.size());
+    assert(state.elements.size() == state.activations.size());
+
+    auto *const values = state.stiffness_matrix.valuePtr();
+    std::fill_n(values, state.stiffness_matrix.nonZeros(), 0.0f);
+
+    for (std::size_t e {0}; e < state.elements.size(); ++e)
+    {
+        const auto [node_i, node_j] = state.elements[e];
+        const auto vec = state.nodes[node_j] - state.nodes[node_i];
+        const auto length = norm(vec);
+        const auto dir = vec / length;
+        state.element_lengths[e] = length;
+        state.element_directions[e] = dir;
+
+        const auto stiffness_constant =
+            state.activations[e] * young_modulus * area / length;
+
+        const auto [c, s] = dir;
+        const auto cc = c * c;
+        const auto ss = s * s;
+        const auto cs = c * s;
+        const float local[16] {cc,
+                               cs,
+                               -cc,
+                               -cs,
+                               cs,
+                               ss,
+                               -cs,
+                               -ss,
+                               -cc,
+                               -cs,
+                               cc,
+                               cs,
+                               -cs,
+                               -ss,
+                               cs,
+                               ss};
+
+        const auto &k_indices = state.element_k_indices[e];
+        for (std::size_t l {0}; l < 16; ++l)
+        {
+            const auto pos = k_indices[l];
+            if (pos != invalid_index)
+            {
+                values[pos] += stiffness_constant * local[l];
+            }
+        }
+    }
 }
 
 void solve_equilibrium_system(Optimization_state &state)
 {
-    // TODO: test different solvers
-    Eigen::SimplicialLDLT<Eigen::SparseMatrix<float>, Eigen::Lower> solver;
-
-    solver.analyzePattern(state.stiffness_matrix);
-    if (const auto result = solver.info(); result != Eigen::Success)
+    state.solver.analyzePattern(state.stiffness_matrix);
+    if (const auto result = state.solver.info(); result != Eigen::Success)
     {
         throw std::runtime_error(std::format(
             "Symbolic decomposition failed: {}", to_string(result)));
     }
 
-    solver.factorize(state.stiffness_matrix);
-    if (const auto result = solver.info(); result != Eigen::Success)
+    state.solver.factorize(state.stiffness_matrix);
+    if (const auto result = state.solver.info(); result != Eigen::Success)
     {
         throw std::runtime_error(
             std::format("Numeric decomposition failed: {}", to_string(result)));
     }
 
     Eigen::VectorXf free_displacements(state.free_dofs.size());
-    free_displacements = solver.solve(state.loads);
-    if (const auto result = solver.info(); result != Eigen::Success)
+    free_displacements = state.solver.solve(state.loads);
+    if (const auto result = state.solver.info(); result != Eigen::Success)
     {
         throw std::runtime_error(
             std::format("Solving failed: {}", to_string(result)));
@@ -124,7 +209,6 @@ void solve_equilibrium_system(Optimization_state &state)
     state.displacements(state.free_dofs) = free_displacements;
 
     state.axial_forces.resize(state.elements.size());
-    state.energies.resize(state.elements.size());
     for (std::size_t e {0}; e < state.elements.size(); ++e)
     {
         const auto [node_i, node_j] = state.elements[e];
@@ -139,8 +223,6 @@ void solve_equilibrium_system(Optimization_state &state)
                                         state.element_lengths[e];
 
         state.axial_forces[e] = stiffness_constant * axial_extension;
-        state.energies[e] =
-            0.5f * stiffness_constant * axial_extension * axial_extension;
     }
 }
 
@@ -246,7 +328,8 @@ void optimization_init(const std::vector<vec2> &nodes,
     std::ranges::fill(state.activations, max_length / total_length);
 
     // FIXME: this must disappear from here
-    assemble(state);
+    rebuild_sparsity(state);
+    assemble_stiffness_matrix(state);
     solve_equilibrium_system(state);
 }
 
@@ -411,6 +494,8 @@ void optimization_step(Optimization_state &state)
     // Add/remove nodes and re-triangulate
 
     // Solve linear elasticity equilibrium system
-    assemble(state);
+    // FIXME: this must change place, and we need to rebuild sparsity if
+    // topology changes
+    assemble_stiffness_matrix(state);
     solve_equilibrium_system(state);
 }

@@ -715,10 +715,8 @@ void create_render_geometry(Render_data &render_data)
         render_data.indices.size() - render_data.circle_indices_offset;
 }
 
-[[nodiscard]] Application init_application()
+void init_application(Application &app)
 {
-    Application app {};
-
     glfwSetErrorCallback(&glfw_error_callback);
 
     app.glfw_context.reset(glfwInit());
@@ -796,8 +794,6 @@ void create_render_geometry(Render_data &render_data)
     app.state = State::idle;
 
     optimization_create_problem(app.optimization);
-
-    return app;
 }
 
 void render_clear(Render_data &render_data)
@@ -1000,7 +996,8 @@ void run_application()
     // any object passed to the main loop callback must have static storage
     // duration.
 
-    static auto app = init_application();
+    static Application app {};
+    init_application(app);
 
     emscripten_set_main_loop_arg(
         [](void *arg) { main_loop_update(*static_cast<Application *>(arg)); },
@@ -1010,7 +1007,8 @@ void run_application()
 
 #else
 
-    auto app = init_application();
+    Application app {};
+    init_application(app);
 
     while (!glfwWindowShouldClose(app.window.get()))
     {
