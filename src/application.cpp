@@ -3,6 +3,10 @@
 #include "unique_handle.hpp"
 #include "vec.hpp"
 
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #define GLFW_INCLUDE_ES3
@@ -29,6 +33,7 @@
 #include <optional>
 #include <random>
 #include <ranges>
+#include <source_location>
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
@@ -108,6 +113,30 @@ struct Window_deleter
     }
 };
 
+struct ImGui_deleter
+{
+    void operator()(ImGuiContext *context)
+    {
+        ImGui::DestroyContext(context);
+    }
+};
+
+struct ImGui_glfw_deleter
+{
+    void operator()()
+    {
+        ImGui_ImplGlfw_Shutdown();
+    }
+};
+
+struct ImGui_opengl_deleter
+{
+    void operator()()
+    {
+        ImGui_ImplOpenGL3_Shutdown();
+    }
+};
+
 struct GL_deleter
 {
     void (*destroy)(GLuint);
@@ -157,12 +186,6 @@ struct Viewport
     int height;
 };
 
-struct Rectangle
-{
-    vec2 pos;
-    vec2 size;
-};
-
 enum struct App_state
 {
     idle,
@@ -191,11 +214,15 @@ struct Render_data
 struct Application
 {
     Optimization_state optimization;
+    Problem problem;
     unsigned int step;
     App_state state;
     bool should_idle;
     Unique_handle<bool, GLFW_deleter> glfw_context;
     Unique_handle<GLFWwindow *, Window_deleter> window;
+    Unique_handle<ImGuiContext *, ImGui_deleter> imgui_context;
+    Unique_handle<bool, ImGui_glfw_deleter> imgui_glfw_context;
+    Unique_handle<bool, ImGui_opengl_deleter> imgui_opengl_context;
     float scale_x;
     float scale_y;
     int framebuffer_width;
@@ -205,10 +232,23 @@ struct Application
 
     static constexpr vec2 world_center {0.0f, 0.0f};
     static constexpr vec2 world_size {2.0f, 2.0f};
-    static constexpr Rectangle play_button {{0.85f, 0.15f}, {0.1f, 0.1f}};
-    static constexpr Rectangle step_button {{0.85f, 0.0f}, {0.1f, 0.1f}};
-    static constexpr Rectangle restart_button {{0.85f, -0.15f}, {0.1f, 0.1f}};
 };
+
+inline void
+check(bool condition,
+      const char *expression,
+      const std::source_location &loc = std::source_location::current())
+{
+    if (!condition)
+    {
+        throw std::runtime_error(std::format("{}:{}: check failed:\n  {}",
+                                             loc.file_name(),
+                                             loc.line(),
+                                             expression));
+    }
+}
+
+#define CHECK(expression) check(expression, #expression)
 
 [[nodiscard]] constexpr float screen_to_world(float x,
                                               int screen_min,
@@ -240,15 +280,6 @@ struct Application
     }
 }
 
-[[nodiscard]] constexpr bool
-is_in_rectangle(const vec2 &point, const Rectangle &rectangle) noexcept
-{
-    return point.x >= rectangle.pos.x &&
-           point.x <= rectangle.pos.x + rectangle.size.x &&
-           point.y >= rectangle.pos.y &&
-           point.y <= rectangle.pos.y + rectangle.size.y;
-}
-
 void glfw_error_callback(int error, const char *description)
 {
     std::cerr << "GLFW error " << error << ": " << description << '\n';
@@ -259,6 +290,11 @@ void glfw_mouse_button_callback(GLFWwindow *window,
                                 int action,
                                 [[maybe_unused]] int mods)
 {
+    if (ImGui::GetIO().WantCaptureMouse)
+    {
+        return;
+    }
+
     if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS)
     {
         auto *const app =
@@ -280,30 +316,7 @@ void glfw_mouse_button_callback(GLFWwindow *window,
                             app->world_center.y,
                             app->world_size.y);
         const vec2 mouse_pos {mouse_world_x, mouse_world_y};
-
-        if (is_in_rectangle(mouse_pos, app->play_button))
-        {
-            if (app->state == App_state::idle)
-            {
-                app->state = App_state::running;
-            }
-            else if (app->state == App_state::running)
-            {
-                app->state = App_state::idle;
-            }
-        }
-        else if (app->state == App_state::idle &&
-                 is_in_rectangle(mouse_pos, app->step_button))
-        {
-            app->state = App_state::running;
-            app->should_idle = true;
-        }
-        else if (is_in_rectangle(mouse_pos, app->restart_button))
-        {
-            app->step = 0;
-            optimization_create_problem(app->optimization,
-                                        Problem::regular_grid);
-        }
+        std::cout << std::format("Click [{}, {}]\n", mouse_pos.x, mouse_pos.y);
     }
 }
 
@@ -636,10 +649,7 @@ void init_application(Application &app)
     glfwSetErrorCallback(&glfw_error_callback);
 
     app.glfw_context.reset(glfwInit());
-    if (!app.glfw_context.has_value())
-    {
-        throw std::runtime_error("Failed to initialize GLFW");
-    }
+    CHECK(app.glfw_context.has_value());
 
 #ifdef __EMSCRIPTEN__
     // WebGL 2.0
@@ -660,10 +670,7 @@ void init_application(Application &app)
 
     app.window.reset(
         glfwCreateWindow(1280, 720, "Truss Optimization", nullptr, nullptr));
-    if (!app.window.has_value())
-    {
-        throw std::runtime_error("Failed to create GLFW window");
-    }
+    CHECK(app.window.has_value());
 
     glfwMakeContextCurrent(app.window.get());
 
@@ -700,6 +707,27 @@ void init_application(Application &app)
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+    CHECK(IMGUI_CHECKVERSION());
+    app.imgui_context.reset(ImGui::CreateContext());
+    CHECK(app.imgui_context.has_value());
+
+    auto &io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
+    ImGui::StyleColorsDark();
+
+    app.imgui_glfw_context.reset(
+        ImGui_ImplGlfw_InitForOpenGL(app.window.get(), true));
+    CHECK(app.imgui_glfw_context.has_value());
+
+#ifdef __EMSCRIPTEN__
+    ImGui_ImplGlfw_InstallEmscriptenCallbacks(app.window.get(), "#canvas");
+#endif
+
+    app.imgui_opengl_context.reset(ImGui_ImplOpenGL3_Init(glsl_version));
+    CHECK(app.imgui_opengl_context.has_value());
+
     app.render_data.line_program = create_program(
         glsl_version, vertex_shader_code, line_fragment_shader_code);
     app.render_data.circle_program = create_program(
@@ -707,7 +735,8 @@ void init_application(Application &app)
 
     app.state = App_state::idle;
 
-    optimization_create_problem(app.optimization, Problem::regular_grid);
+    app.problem = Problem::regular_grid;
+    optimization_create_problem(app.optimization, app.problem);
 }
 
 void render_clear(Render_data &render_data)
@@ -716,12 +745,12 @@ void render_clear(Render_data &render_data)
     render_data.circles.clear();
 }
 
-void render_push_line(Render_data &render_data, const Line &line)
+void render_line(Render_data &render_data, const Line &line)
 {
     render_data.lines.push_back(line);
 }
 
-void render_push_circle(Render_data &render_data, const Circle &circle)
+void render_circle(Render_data &render_data, const Circle &circle)
 {
     render_data.circles.push_back(circle);
 }
@@ -750,6 +779,51 @@ void render(Render_data &render_data)
     glBindVertexArray(0);
 }
 
+void make_ui(Application &app)
+{
+    if (ImGui::Begin("UI"))
+    {
+        ImGui::Text("%.3f ms/frame, %.2f fps",
+                    1000.0 / static_cast<double>(ImGui::GetIO().Framerate),
+                    static_cast<double>(ImGui::GetIO().Framerate));
+
+        constexpr const char *items[] {"Regular grid", "Random Delaunay"};
+        auto current_item = static_cast<int>(app.problem);
+        ImGui::Combo("Problem", &current_item, items, std::size(items));
+        app.problem = static_cast<Problem>(current_item);
+
+        if (app.state == App_state::idle)
+        {
+            if (ImGui::Button("Start"))
+            {
+                app.state = App_state::running;
+            }
+        }
+        else if (app.state == App_state::running)
+        {
+            if (ImGui::Button("Stop"))
+            {
+                app.state = App_state::idle;
+            }
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Step"))
+        {
+            app.state = App_state::running;
+            app.should_idle = true;
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Reset"))
+        {
+            app.step = 0;
+            optimization_create_problem(app.optimization, app.problem);
+        }
+    }
+    ImGui::End();
+}
+
 void main_loop_update(Application &app)
 {
     glfwPollEvents();
@@ -765,6 +839,14 @@ void main_loop_update(Application &app)
             app.should_idle = false;
         }
     }
+
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+
+    make_ui(app);
+
+    ImGui::Render();
 
     render_clear(app.render_data);
 
@@ -788,94 +870,36 @@ void main_loop_update(Application &app)
             color = rel_force * max_color + 1.0f - rel_force;
         }
 
-        render_push_line(app.render_data,
-                         {.a = app.optimization.nodes[i],
-                          .b = app.optimization.nodes[j],
-                          .thickness = activation * 0.03f,
-                          .color = color});
+        render_line(app.render_data,
+                    {.a = app.optimization.nodes[i],
+                     .b = app.optimization.nodes[j],
+                     .thickness = activation * 0.03f,
+                     .color = color});
     }
-
-    constexpr vec3 color {0.75f, 0.75f, 0.75f};
-    constexpr float thickness {0.015f};
-
-    for (const auto &rectangle :
-         {app.play_button, app.step_button, app.restart_button})
-    {
-        const auto p0 = rectangle.pos;
-        const auto p1 = rectangle.pos + vec2 {rectangle.size.x, 0.0f};
-        const auto p2 = rectangle.pos + rectangle.size;
-        const auto p3 = rectangle.pos + vec2 {0.0f, rectangle.size.y};
-        render_push_line(app.render_data, {p0, p1, thickness, color});
-        render_push_line(app.render_data, {p1, p2, thickness, color});
-        render_push_line(app.render_data, {p2, p3, thickness, color});
-        render_push_line(app.render_data, {p3, p0, thickness, color});
-    }
-
-    if (app.state == App_state::running)
-    {
-        const auto p0 =
-            app.play_button.pos + app.play_button.size * vec2 {0.3f, 0.3f};
-        const auto p1 =
-            app.play_button.pos + app.play_button.size * vec2 {0.3f, 0.7f};
-        const auto p2 =
-            app.play_button.pos + app.play_button.size * vec2 {0.7f, 0.3f};
-        const auto p3 =
-            app.play_button.pos + app.play_button.size * vec2 {0.7f, 0.7f};
-        render_push_line(app.render_data, {p0, p1, thickness, color});
-        render_push_line(app.render_data, {p2, p3, thickness, color});
-    }
-    else
-    {
-        const auto p0 =
-            app.play_button.pos + app.play_button.size * vec2 {0.7f, 0.5f};
-        const auto p1 =
-            app.play_button.pos + app.play_button.size * vec2 {0.3f, 0.8f};
-        const auto p2 =
-            app.play_button.pos + app.play_button.size * vec2 {0.3f, 0.2f};
-        render_push_line(app.render_data, {p0, p1, thickness, color});
-        render_push_line(app.render_data, {p1, p2, thickness, color});
-        render_push_line(app.render_data, {p2, p0, thickness, color});
-    }
-
-    const auto p0 =
-        app.step_button.pos + app.step_button.size * vec2 {0.65f, 0.5f};
-    const auto p1 =
-        app.step_button.pos + app.step_button.size * vec2 {0.3f, 0.8f};
-    const auto p2 =
-        app.step_button.pos + app.step_button.size * vec2 {0.3f, 0.2f};
-    const auto p3 =
-        app.step_button.pos + app.step_button.size * vec2 {0.7f, 0.2f};
-    const auto p4 =
-        app.step_button.pos + app.step_button.size * vec2 {0.7f, 0.8f};
-    render_push_line(app.render_data, {p0, p1, thickness, color});
-    render_push_line(app.render_data, {p1, p2, thickness, color});
-    render_push_line(app.render_data, {p2, p0, thickness, color});
-    render_push_line(app.render_data, {p3, p4, thickness, color});
 
     for (std::size_t i {0}; i < app.optimization.nodes.size(); ++i)
     {
-        render_push_circle(app.render_data,
-                           {.center = app.optimization.nodes[i],
-                            .radius = 0.0f,
-                            .thickness = 0.02f,
-                            .color = {1.0f, 1.0f, 1.0f}});
+        render_circle(app.render_data,
+                      {.center = app.optimization.nodes[i],
+                       .radius = 0.0f,
+                       .thickness = 0.02f,
+                       .color = {1.0f, 1.0f, 1.0f}});
     }
 
     // Draw gradient directions
     /*if (!app.optimization.gradients.empty())
     {
-        //const auto max_gradient = *std::ranges::max_element(
-        //    app.optimization.gradients,
-        //    [](const vec2 &a, const vec2 &b) { return norm(a) < norm(b); });
+        // const auto max_gradient = *std::ranges::max_element(
+        //     app.optimization.gradients,
+        //     [](const vec2 &a, const vec2 &b) { return norm(a) < norm(b); });
         for (std::size_t i {0}; i < app.optimization.nodes.size(); ++i)
         {
-            render_push_line(
-                app.render_data,
-                {.a = app.optimization.nodes[i],
-                 .b = app.optimization.nodes[i] -
-                      0.07f * normalize(app.optimization.gradients[i]),
-                 .thickness = 0.015f,
-                 .color = {1.0f, 1.0f, 1.0f}});
+            render_line(app.render_data,
+                        {.a = app.optimization.nodes[i],
+                         .b = app.optimization.nodes[i] -
+                              0.07f * normalize(app.optimization.gradients[i]),
+                         .thickness = 0.015f,
+                         .color = {1.0f, 1.0f, 1.0f}});
         }
     }*/
 
@@ -886,6 +910,8 @@ void main_loop_update(Application &app)
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     render(app.render_data);
+
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
 #ifndef __EMSCRIPTEN__
     glfwSwapBuffers(app.window.get());
