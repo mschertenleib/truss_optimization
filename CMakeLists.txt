@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.19)
 
 project(truss_optimization LANGUAGES CXX)
+set(target_name truss_optimization)
 
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
@@ -29,12 +30,6 @@ include(${CPM_DOWNLOAD_LOCATION})
 
 
 CPMAddPackage(
-    GITHUB_REPOSITORY nothings/stb
-    GIT_TAG 981f08a
-    DOWNLOAD_ONLY YES
-)
-
-CPMAddPackage(
     GITLAB_REPOSITORY libeigen/eigen
     GIT_TAG c487a4fe
     DOWNLOAD_ONLY YES
@@ -61,32 +56,56 @@ if (NOT TARGET_WEB)
     )
 endif ()
 
-add_executable(${CMAKE_PROJECT_NAME})
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+CPMAddPackage(
+    GITHUB_REPOSITORY ocornut/imgui
+    GIT_TAG v1.90.3-docking
+    DOWNLOAD_ONLY YES
+)
+add_library(imgui STATIC)
+target_sources(imgui PRIVATE
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui.h
+    ${imgui_SOURCE_DIR}/imgui_internal.h
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/imgui_demo.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+)
+target_include_directories(imgui SYSTEM PUBLIC
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends
+)
+target_link_libraries(imgui PRIVATE glfw)
+
+
+add_executable(${target_name})
+target_sources(${target_name} PRIVATE
     src/main.cpp
-    src/application.hpp src/application.cpp
-    src/optimization.hpp src/optimization.cpp
+    src/application.cpp src/application.hpp
+    src/optimization.cpp src/optimization.hpp
     src/unique_handle.hpp
     src/vec.hpp
 )
-target_include_directories(${CMAKE_PROJECT_NAME} SYSTEM PRIVATE
-    ${stb_SOURCE_DIR}
+target_include_directories(${target_name} SYSTEM PRIVATE
     ${eigen_SOURCE_DIR}
     ${CDT_SOURCE_DIR}/CDT/include
 )
-target_compile_features(${CMAKE_PROJECT_NAME} PRIVATE cxx_std_23)
+target_link_libraries(${target_name} PRIVATE imgui)
+target_compile_features(${target_name} PRIVATE cxx_std_23)
 
 
 if (TARGET_WEB)
-    set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/web)
+    set_target_properties(${target_name} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/web)
     set(CMAKE_EXECUTABLE_SUFFIX ".html")
-    target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${EMSCRIPTEN_ROOT_PATH}/sysroot/include)
-    target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
+    target_include_directories(${target_name} PRIVATE ${EMSCRIPTEN_ROOT_PATH}/sysroot/include)
+    target_compile_options(${target_name} PRIVATE
         -Os
         -sDISABLE_EXCEPTION_CATCHING=0
         --use-port=contrib.glfw3
     )
-    target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
+    target_link_options(${target_name} PRIVATE
         -Os
         -sWASM=1
         -sUSE_WEBGL2=1
@@ -100,7 +119,7 @@ if (TARGET_WEB)
         --shell-file ${CMAKE_SOURCE_DIR}/src/shell.html
     )
 else ()
-    target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE glfw)
+    target_link_libraries(${target_name} PRIVATE glfw)
 endif ()
 
 
@@ -128,11 +147,11 @@ set(gcc_warnings
     -Wswitch-enum
 )
 if (CMAKE_CXX_COMPILER_ID MATCHES ".*Clang")
-    target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE ${clang_warnings})
+    target_compile_options(${target_name} PRIVATE ${clang_warnings})
 elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE ${gcc_warnings})
+    target_compile_options(${target_name} PRIVATE ${gcc_warnings})
 elseif (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-    target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE /W4)
+    target_compile_options(${target_name} PRIVATE /W4 /permissive-)
 else ()
     message(WARNING "No warnings set for compiler ${CMAKE_CXX_COMPILER_ID}")
 endif ()
@@ -150,8 +169,8 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         )
     endif()
 
-    target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE $<$<CONFIG:Debug>:${san_compile}>)
-    target_link_options(${CMAKE_PROJECT_NAME} PRIVATE $<$<CONFIG:Debug>:${san_link}>)
+    target_compile_options(${target_name} PRIVATE $<$<CONFIG:Debug>:${san_compile}>)
+    target_link_options(${target_name} PRIVATE $<$<CONFIG:Debug>:${san_link}>)
     
     set(lsan_suppressions "${CMAKE_BINARY_DIR}/lsan.supp")
     file(WRITE "${lsan_suppressions}"
@@ -181,7 +200,7 @@ extern \"C\" const char* __lsan_default_options() {
 extern \"C\" const char* __ubsan_default_options() {
     return \"${ubsan_defaults}\";
 }")
-    target_sources(${CMAKE_PROJECT_NAME} PRIVATE $<$<CONFIG:Debug>:${san_defaults_src}>)
+    target_sources(${target_name} PRIVATE $<$<CONFIG:Debug>:${san_defaults_src}>)
 endif ()
 
 

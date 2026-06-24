@@ -42,7 +42,13 @@ struct Optimization_state
     std::vector<vec2> gradients;
 };
 
-void optimization_create_problem(Optimization_state &state);
+enum struct Problem
+{
+    regular_grid,
+    random_delaunay
+};
+
+void optimization_create_problem(Optimization_state &state, Problem problem);
 void optimization_step(Optimization_state &state);
 
 #endif

@@ -3,10 +3,6 @@
 #include "unique_handle.hpp"
 #include "vec.hpp"
 
-#define STB_TRUETYPE_IMPLEMENTATION
-#define STBTT_STATIC
-#include "stb_truetype.h"
-
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #define GLFW_INCLUDE_ES3
@@ -25,9 +21,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <format>
-#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -169,7 +163,7 @@ struct Rectangle
     vec2 size;
 };
 
-enum struct State
+enum struct App_state
 {
     idle,
     placing_support,
@@ -198,7 +192,7 @@ struct Application
 {
     Optimization_state optimization;
     unsigned int step;
-    State state;
+    App_state state;
     bool should_idle;
     Unique_handle<bool, GLFW_deleter> glfw_context;
     Unique_handle<GLFWwindow *, Window_deleter> window;
@@ -211,9 +205,9 @@ struct Application
 
     static constexpr vec2 world_center {0.0f, 0.0f};
     static constexpr vec2 world_size {2.0f, 2.0f};
-    static constexpr Rectangle play_button {0.85f, 0.15f, 0.1f, 0.1f};
-    static constexpr Rectangle step_button {0.85f, 0.0f, 0.1f, 0.1f};
-    static constexpr Rectangle restart_button {0.85f, -0.15f, 0.1f, 0.1f};
+    static constexpr Rectangle play_button {{0.85f, 0.15f}, {0.1f, 0.1f}};
+    static constexpr Rectangle step_button {{0.85f, 0.0f}, {0.1f, 0.1f}};
+    static constexpr Rectangle restart_button {{0.85f, -0.15f}, {0.1f, 0.1f}};
 };
 
 [[nodiscard]] constexpr float screen_to_world(float x,
@@ -289,25 +283,26 @@ void glfw_mouse_button_callback(GLFWwindow *window,
 
         if (is_in_rectangle(mouse_pos, app->play_button))
         {
-            if (app->state == State::idle)
+            if (app->state == App_state::idle)
             {
-                app->state = State::running;
+                app->state = App_state::running;
             }
-            else if (app->state == State::running)
+            else if (app->state == App_state::running)
             {
-                app->state = State::idle;
+                app->state = App_state::idle;
             }
         }
-        else if (app->state == State::idle &&
+        else if (app->state == App_state::idle &&
                  is_in_rectangle(mouse_pos, app->step_button))
         {
-            app->state = State::running;
+            app->state = App_state::running;
             app->should_idle = true;
         }
         else if (is_in_rectangle(mouse_pos, app->restart_button))
         {
             app->step = 0;
-            optimization_create_problem(app->optimization);
+            optimization_create_problem(app->optimization,
+                                        Problem::regular_grid);
         }
     }
 }
@@ -561,85 +556,6 @@ void update_vertex_buffer(GLuint vao,
     glBindVertexArray(0);
 }
 
-[[nodiscard]] std::vector<std::uint8_t> read_binary_file(const char *file_name)
-{
-    const std::filesystem::path path(file_name);
-    if (!std::filesystem::exists(path))
-    {
-        throw std::runtime_error(
-            std::format("File \"{}\" does not exist", path.string()));
-    }
-
-    const auto file_size = std::filesystem::file_size(path);
-    std::vector<std::uint8_t> buffer(file_size);
-
-    std::ifstream file(path, std::ios::binary);
-    if (!file)
-    {
-        throw std::runtime_error(
-            std::format("Failed to open file \"{}\"", path.string()));
-    }
-
-    file.read(reinterpret_cast<char *>(buffer.data()),
-              static_cast<std::streamsize>(file_size));
-    if (file.eof())
-    {
-        throw std::runtime_error(std::format(
-            "End-of-file reached while reading file \"{}\"", path.string()));
-    }
-
-    return buffer;
-}
-
-void create_font_texture()
-{
-    const auto ttf = read_binary_file("font/Roboto_Condensed-Regular.ttf");
-    constexpr int atlas_width {1024};
-    constexpr int atlas_height {1024};
-    std::vector<std::uint8_t> pixels(atlas_width * atlas_height);
-
-    stbtt_pack_context pc {};
-    stbtt_PackBegin(
-        &pc, pixels.data(), atlas_width, atlas_height, 0, 1, nullptr);
-    stbtt_PackSetOversampling(&pc, 2, 2);
-    constexpr int num_chars {95};
-    stbtt_packedchar char_data[num_chars] {};
-    stbtt_PackFontRange(&pc, ttf.data(), 0, 32.0f, 32, num_chars, char_data);
-    stbtt_PackEnd(&pc);
-
-    GLuint texture_gl {};
-    glGenTextures(1, &texture_gl);
-    Unique_handle font_texture(texture_gl, GL_array_deleter {glDeleteTextures});
-    glBindTexture(GL_TEXTURE_2D, font_texture.get());
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D,
-                 0,
-                 GL_R8,
-                 atlas_width,
-                 atlas_height,
-                 0,
-                 GL_RED,
-                 GL_UNSIGNED_BYTE,
-                 pixels.data());
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-    /*
-    // --- When drawing a string ---
-float x = 20.0f, y = 50.0f; // baseline position in screen space
-stbtt_aligned_quad q;
-for (const char* p = "Hello OpenGL!"; *p; ++p) {
-    if (*p < 32 || *p > 126) continue;
-    stbtt_GetPackedQuad(cdata, ATLAS_W, ATLAS_H, *p - 32, &x, &y, &q, 1);
-    // append 4 verts (q.x0/q.y0..q.x1/q.y1, q.s0/q.t0..q.s1/q.t1) to your
-vertex buffer
-}
-// In your fragment shader: float a = texture(uAtlas, uv).r; outColor =
-vec4(textColor, a);
-// Make sure blending is enabled: SRC_ALPHA, ONE_MINUS_SRC_ALPHA.
-    */
-}
-
 void create_render_geometry(Render_data &render_data)
 {
     render_data.vertices.clear();
@@ -789,11 +705,9 @@ void init_application(Application &app)
     app.render_data.circle_program = create_program(
         glsl_version, vertex_shader_code, circle_fragment_shader_code);
 
-    // create_font_texture();
+    app.state = App_state::idle;
 
-    app.state = State::idle;
-
-    optimization_create_problem(app.optimization);
+    optimization_create_problem(app.optimization, Problem::regular_grid);
 }
 
 void render_clear(Render_data &render_data)
@@ -840,14 +754,14 @@ void main_loop_update(Application &app)
 {
     glfwPollEvents();
 
-    if (app.state == State::running)
+    if (app.state == App_state::running)
     {
         optimization_step(app.optimization);
         ++app.step;
 
         if (app.should_idle)
         {
-            app.state = State::idle;
+            app.state = App_state::idle;
             app.should_idle = false;
         }
     }
@@ -897,7 +811,7 @@ void main_loop_update(Application &app)
         render_push_line(app.render_data, {p3, p0, thickness, color});
     }
 
-    if (app.state == State::running)
+    if (app.state == App_state::running)
     {
         const auto p0 =
             app.play_button.pos + app.play_button.size * vec2 {0.3f, 0.3f};
@@ -938,14 +852,14 @@ void main_loop_update(Application &app)
     render_push_line(app.render_data, {p2, p0, thickness, color});
     render_push_line(app.render_data, {p3, p4, thickness, color});
 
-    /*for (std::size_t i {0}; i < app.optimization.nodes.size(); ++i)
+    for (std::size_t i {0}; i < app.optimization.nodes.size(); ++i)
     {
         render_push_circle(app.render_data,
                            {.center = app.optimization.nodes[i],
                             .radius = 0.0f,
                             .thickness = 0.02f,
                             .color = {1.0f, 1.0f, 1.0f}});
-    }*/
+    }
 
     // Draw gradient directions
     /*if (!app.optimization.gradients.empty())

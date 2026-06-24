@@ -426,104 +426,125 @@ void geometry_step(Optimization_state &state)
 
 } // namespace
 
-void optimization_create_problem(Optimization_state &state)
+void optimization_create_problem(Optimization_state &state, Problem problem)
 {
-    std::vector<vec2> nodes;
-
-#if 0
-    nodes.emplace_back(-0.8f, -0.4f);
-    nodes.emplace_back(-0.8f, 0.4f);
-    const std::vector<std::uint32_t> fixed_dofs {0, 1, 2, 3};
-
-    nodes.emplace_back(0.8f, 0.0f);
-    const std::vector<std::uint32_t> loaded_dofs {4, 5};
-    const std::vector<float> loads {0.0f, -1.0f};
-
-    const std::vector<std::uint32_t> immovable_dofs {0, 1, 2, 3, 4, 5};
-
-    constexpr std::uint32_t num_free_nodes {200};
-    std::minstd_rand rng(17657575);
-    std::uniform_real_distribution<float> x(-0.8f, 0.8f);
-    std::uniform_real_distribution<float> y(-0.8f, 0.8f);
-    nodes.reserve(nodes.size() + num_free_nodes);
-    for (std::uint32_t i {0}; i < num_free_nodes; ++i)
+    if (problem == Problem::random_delaunay)
     {
-        nodes.emplace_back(x(rng), y(rng));
-    }
+        std::vector<vec2> nodes;
+        nodes.emplace_back(-0.8f, -0.4f);
+        nodes.emplace_back(-0.8f, 0.4f);
+        const std::vector<std::uint32_t> fixed_dofs {0, 1, 2, 3};
 
-    std::vector<Element> elements;
-    make_triangulation(nodes, elements);
-    /*for (std::uint32_t i {0}; i < nodes.size(); ++i)
-    {
-        for (std::uint32_t j {i + 1}; j < nodes.size(); ++j)
+        nodes.emplace_back(0.8f, 0.0f);
+        const std::vector<std::uint32_t> loaded_dofs {4, 5};
+        const std::vector<float> loads {0.0f, -1.0f};
+
+        const std::vector<std::uint32_t> immovable_dofs {0, 1, 2, 3, 4, 5};
+
+        constexpr std::uint32_t num_free_nodes {200};
+        std::minstd_rand rng(17657575);
+        std::uniform_real_distribution<float> x(-0.8f, 0.8f);
+        std::uniform_real_distribution<float> y(-0.8f, 0.8f);
+        nodes.reserve(nodes.size() + num_free_nodes);
+        for (std::uint32_t i {0}; i < num_free_nodes; ++i)
         {
-            elements.emplace_back(i, j);
+            nodes.emplace_back(x(rng), y(rng));
         }
-    }*/
-#else
 
-    constexpr unsigned int num_x {20};
-    constexpr unsigned int num_y {20};
-    nodes.reserve(num_x * num_y);
-    for (unsigned int iy {0}; iy < num_y; ++iy)
-    {
-        for (unsigned int ix {0}; ix < num_x; ++ix)
+        std::vector<Element> elements;
+        make_triangulation(nodes, elements);
+        /*for (std::uint32_t i {0}; i < nodes.size(); ++i)
         {
-            const auto x = -0.8f + static_cast<float>(ix) / (num_x - 1) * 1.6f;
-            const auto y = -0.8f + static_cast<float>(iy) / (num_y - 1) * 1.6f;
-            nodes.emplace_back(x, y);
-        }
+            for (std::uint32_t j {i + 1}; j < nodes.size(); ++j)
+            {
+                elements.emplace_back(i, j);
+            }
+        }*/
+
+        optimization_init(nodes,
+                          elements,
+                          fixed_dofs,
+                          loaded_dofs,
+                          loads,
+                          immovable_dofs,
+                          state);
     }
-
-    const auto node = [num_x](std::uint32_t iy, std::uint32_t ix)
-    { return iy * num_x + ix; };
-
-    const auto dof =
-        [&node](std::uint32_t iy, std::uint32_t ix, std::uint32_t axis)
-    { return node(iy, ix) * 2 + axis; };
-
-    const std::vector<std::uint32_t> fixed_dofs {dof(num_y / 4, 0, 0),
-                                                 dof(num_y / 4, 0, 1),
-                                                 dof(num_y * 3 / 4, 0, 0),
-                                                 dof(num_y * 3 / 4, 0, 1)};
-    const std::vector<std::uint32_t> loaded_dofs {dof(num_y / 2, num_x - 1, 0),
-                                                  dof(num_y / 2, num_x - 1, 1)};
-    const std::vector<float> loads {0.0f, -1.0f};
-    std::vector<std::uint32_t> immovable_dofs;
-    immovable_dofs.insert(
-        immovable_dofs.end(), fixed_dofs.begin(), fixed_dofs.end());
-    immovable_dofs.insert(
-        immovable_dofs.end(), loaded_dofs.begin(), loaded_dofs.end());
-    std::ranges::sort(immovable_dofs);
-
-    std::vector<Element> elements;
-    for (std::uint32_t iy {0}; iy < num_y; ++iy)
+    else if (problem == Problem::regular_grid)
     {
-        for (std::uint32_t ix {0}; ix < num_x; ++ix)
+        std::vector<vec2> nodes;
+        constexpr unsigned int num_x {20};
+        constexpr unsigned int num_y {20};
+        nodes.reserve(num_x * num_y);
+        for (unsigned int iy {0}; iy < num_y; ++iy)
         {
-            if (ix + 1 < num_x)
-                elements.emplace_back(node(iy, ix), node(iy, ix + 1));
-            if (iy + 1 < num_y)
-                elements.emplace_back(node(iy, ix), node(iy + 1, ix));
-            if ((ix + 1 < num_x) && (iy + 1 < num_y))
-                elements.emplace_back(node(iy, ix), node(iy + 1, ix + 1));
-            if ((ix > 0) && (iy + 1 < num_y))
-                elements.emplace_back(node(iy, ix), node(iy + 1, ix - 1));
-            if ((ix + 2 < num_x) && (iy + 1 < num_y))
-                elements.emplace_back(node(iy, ix), node(iy + 1, ix + 2));
-            if ((ix + 1 < num_x) && (iy + 2 < num_y))
-                elements.emplace_back(node(iy, ix), node(iy + 2, ix + 1));
-            if ((ix > 0) && (iy + 2 < num_y))
-                elements.emplace_back(node(iy, ix), node(iy + 2, ix - 1));
-            if ((ix > 1) && (iy + 1 < num_y))
-                elements.emplace_back(node(iy, ix), node(iy + 1, ix - 2));
+            for (unsigned int ix {0}; ix < num_x; ++ix)
+            {
+                const auto x =
+                    -0.8f + static_cast<float>(ix) / (num_x - 1) * 1.6f;
+                const auto y =
+                    -0.8f + static_cast<float>(iy) / (num_y - 1) * 1.6f;
+                nodes.emplace_back(x, y);
+            }
         }
+
+        const auto node = [num_x](std::uint32_t iy, std::uint32_t ix)
+        { return iy * num_x + ix; };
+
+        const auto dof =
+            [&node](std::uint32_t iy, std::uint32_t ix, std::uint32_t axis)
+        { return node(iy, ix) * 2 + axis; };
+
+        const std::vector<std::uint32_t> fixed_dofs {dof(num_y / 4, 0, 0),
+                                                     dof(num_y / 4, 0, 1),
+                                                     dof(num_y * 3 / 4, 0, 0),
+                                                     dof(num_y * 3 / 4, 0, 1)};
+        const std::vector<std::uint32_t> loaded_dofs {
+            dof(num_y / 2, num_x - 1, 0), dof(num_y / 2, num_x - 1, 1)};
+        const std::vector<float> loads {0.0f, -1.0f};
+        std::vector<std::uint32_t> immovable_dofs;
+        immovable_dofs.insert(
+            immovable_dofs.end(), fixed_dofs.begin(), fixed_dofs.end());
+        immovable_dofs.insert(
+            immovable_dofs.end(), loaded_dofs.begin(), loaded_dofs.end());
+        std::ranges::sort(immovable_dofs);
+
+        std::vector<Element> elements;
+        for (std::uint32_t iy {0}; iy < num_y; ++iy)
+        {
+            for (std::uint32_t ix {0}; ix < num_x; ++ix)
+            {
+                if (ix + 1 < num_x)
+                    elements.emplace_back(node(iy, ix), node(iy, ix + 1));
+                if (iy + 1 < num_y)
+                    elements.emplace_back(node(iy, ix), node(iy + 1, ix));
+                if ((ix + 1 < num_x) && (iy + 1 < num_y))
+                    elements.emplace_back(node(iy, ix), node(iy + 1, ix + 1));
+                if ((ix > 0) && (iy + 1 < num_y))
+                    elements.emplace_back(node(iy, ix), node(iy + 1, ix - 1));
+                if ((ix + 2 < num_x) && (iy + 1 < num_y))
+                    elements.emplace_back(node(iy, ix), node(iy + 1, ix + 2));
+                if ((ix + 1 < num_x) && (iy + 2 < num_y))
+                    elements.emplace_back(node(iy, ix), node(iy + 2, ix + 1));
+                if ((ix > 0) && (iy + 2 < num_y))
+                    elements.emplace_back(node(iy, ix), node(iy + 2, ix - 1));
+                if ((ix > 1) && (iy + 1 < num_y))
+                    elements.emplace_back(node(iy, ix), node(iy + 1, ix - 2));
+            }
+        }
+
+        optimization_init(nodes,
+                          elements,
+                          fixed_dofs,
+                          loaded_dofs,
+                          loads,
+                          immovable_dofs,
+                          state);
     }
-
-#endif
-
-    optimization_init(
-        nodes, elements, fixed_dofs, loaded_dofs, loads, immovable_dofs, state);
+    else
+    {
+        std::cerr << std::format("Unhandled problem: value = {}\n",
+                                 std::to_underlying(problem));
+    }
 }
 
 void optimization_step(Optimization_state &state)
