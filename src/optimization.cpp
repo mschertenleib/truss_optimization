@@ -183,13 +183,6 @@ void assemble_stiffness_matrix(Optimization_state &state)
 
 void solve_equilibrium_system(Optimization_state &state)
 {
-    state.solver.analyzePattern(state.stiffness_matrix);
-    if (const auto result = state.solver.info(); result != Eigen::Success)
-    {
-        throw std::runtime_error(std::format(
-            "Symbolic decomposition failed: {}", to_string(result)));
-    }
-
     state.solver.factorize(state.stiffness_matrix);
     if (const auto result = state.solver.info(); result != Eigen::Success)
     {
@@ -327,10 +320,7 @@ void optimization_init(const std::vector<vec2> &nodes,
     state.activations.resize(state.elements.size());
     std::ranges::fill(state.activations, max_length / total_length);
 
-    // FIXME: this must disappear from here
-    rebuild_sparsity(state);
-    assemble_stiffness_matrix(state);
-    solve_equilibrium_system(state);
+    state.sparsity_stale = true;
 }
 
 void compute_activations(Optimization_state &state)
@@ -551,34 +541,40 @@ void optimization_step(Optimization_state &state)
 {
     /*
     Full optimization procedure:
-    - Initial node distribution
-    - Triangulate (there might be a way to generate blue noise and a
-      triangulation as a single pass, might be worth looking into it)
+    - Initial problem setup
     - Loop:
         - If topology changed:
-            - Assemble K (might be possible to only update coefficients with a
-              topology change)
+            - Rebuild sparsity
             - Symbolically decompose K
-        - Else:
-            - Assemble K (only update values, same sparsity)
+
+        - Assemble K (only update values, same sparsity)
         - Numerically decompose K
         - Solve linear system
-        - Compute activations
-        - Move nodes
-        - If necessary, re-triangulate
+        - Compute sensitivities (gradients of compliance w.r.t activations and
+    node positions)
+        - Update design variables (activations and positions) using MMA, with
+    line search
+        - If necessary, from time to time, update topology
     */
 
-    // Size edges
-    compute_activations(state);
+    if (state.sparsity_stale)
+    {
+        rebuild_sparsity(state);
 
-    // Move nodes
-    geometry_step(state);
+        state.solver.analyzePattern(state.stiffness_matrix);
+        if (const auto result = state.solver.info(); result != Eigen::Success)
+        {
+            throw std::runtime_error(std::format(
+                "Symbolic decomposition failed: {}", to_string(result)));
+        }
 
-    // Add/remove nodes and re-triangulate
+        state.sparsity_stale = false;
+    }
 
-    // Solve linear elasticity equilibrium system
-    // FIXME: this must change place, and we need to rebuild sparsity if
-    // topology changes
     assemble_stiffness_matrix(state);
     solve_equilibrium_system(state);
+
+    compute_activations(state);
+
+    geometry_step(state);
 }

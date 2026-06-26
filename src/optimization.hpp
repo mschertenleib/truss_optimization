@@ -34,6 +34,7 @@ struct Optimization_state
     std::vector<vec2> element_directions;
     std::vector<float> element_lengths;
     Eigen::SparseMatrix<float, Eigen::ColMajor> stiffness_matrix;
+    bool sparsity_stale;
     Eigen::SimplicialLDLT<decltype(stiffness_matrix), Eigen::Lower> solver;
     Eigen::VectorXf loads;
     Eigen::VectorXf displacements;

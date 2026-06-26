@@ -229,6 +229,13 @@ struct Application
     int framebuffer_height;
     Viewport viewport;
     Render_data render_data;
+    bool draw_nodes;
+    bool draw_elements;
+    bool draw_gradients;
+    bool normalize_gradients;
+    float node_size;
+    float gradients_scale;
+    float normalized_gradients_scale;
 
     static constexpr vec2 world_center {0.0f, 0.0f};
     static constexpr vec2 world_size {2.0f, 2.0f};
@@ -579,6 +586,12 @@ void create_render_geometry(Render_data &render_data)
     {
         const auto line_vec = line.b - line.a;
         const auto line_length = norm(line_vec);
+        if (line_length == 0.0f)
+        {
+            // TODO: this might not be sufficient to avoid ill-formed lines, or
+            // we might want to make it well-defined
+            continue;
+        }
         const auto line_dir = line_vec * (1.0f / line_length);
         const auto delta_left =
             vec2 {-line_dir.y, line_dir.x} * (line.thickness * 0.5f);
@@ -617,6 +630,10 @@ void create_render_geometry(Render_data &render_data)
     for (const auto &circle : render_data.circles)
     {
         const auto half_side = circle.radius + 0.5f * circle.thickness;
+        if (half_side == 0.0f)
+        {
+            continue;
+        }
         const auto bottom_left = circle.center + vec2 {-half_side, -half_side};
         const auto bottom_right = circle.center + vec2 {half_side, -half_side};
         const auto top_right = circle.center + vec2 {half_side, half_side};
@@ -737,6 +754,12 @@ void init_application(Application &app)
 
     app.problem = Problem::regular_grid;
     optimization_create_problem(app.optimization, app.problem);
+
+    app.draw_nodes = true;
+    app.draw_elements = true;
+    app.node_size = 0.02f;
+    app.gradients_scale = 5e5f;
+    app.normalized_gradients_scale = 0.05f;
 }
 
 void render_clear(Render_data &render_data)
@@ -820,6 +843,17 @@ void make_ui(Application &app)
             app.step = 0;
             optimization_create_problem(app.optimization, app.problem);
         }
+
+        ImGui::Checkbox("Draw nodes", &app.draw_nodes);
+        ImGui::Checkbox("Draw elements", &app.draw_elements);
+        ImGui::Checkbox("Draw gradients", &app.draw_gradients);
+        ImGui::Checkbox("Normalize gradients", &app.normalize_gradients);
+        ImGui::SliderFloat("Node size", &app.node_size, 0.0f, 0.05f);
+        ImGui::SliderFloat("Gradients scale", &app.gradients_scale, 0.0f, 5e6f);
+        ImGui::SliderFloat("Normalized gradients scale",
+                           &app.normalized_gradients_scale,
+                           0.0f,
+                           0.3f);
     }
     ImGui::End();
 }
@@ -850,58 +884,78 @@ void main_loop_update(Application &app)
 
     render_clear(app.render_data);
 
-    const auto [min_force, max_force] =
-        std::ranges::minmax_element(app.optimization.axial_forces);
-
-    for (std::size_t e {0}; e < app.optimization.elements.size(); ++e)
+    if (app.draw_elements)
     {
-        const auto [i, j] = app.optimization.elements[e];
-        const auto activation = app.optimization.activations[e];
+        const auto [min_force, max_force] =
+            std::ranges::minmax_element(app.optimization.axial_forces);
 
-        vec3 color {1.0f, 1.0f, 1.0f};
-        if (app.optimization.axial_forces.size() ==
-            app.optimization.elements.size())
+        for (std::size_t e {0}; e < app.optimization.elements.size(); ++e)
         {
-            const auto force = app.optimization.axial_forces[e];
-            const auto rel_force =
-                force >= 0.0f ? force / *max_force : force / *min_force;
-            const auto max_color = force >= 0.0f ? vec3 {0.25f, 0.25f, 1.0f}
-                                                 : vec3 {1.0f, 0.25f, 0.25f};
-            color = rel_force * max_color + 1.0f - rel_force;
-        }
+            const auto [i, j] = app.optimization.elements[e];
+            const auto activation = app.optimization.activations[e];
 
-        render_line(app.render_data,
-                    {.a = app.optimization.nodes[i],
-                     .b = app.optimization.nodes[j],
-                     .thickness = activation * 0.03f,
-                     .color = color});
-    }
+            vec3 color {1.0f, 1.0f, 1.0f};
+            if (app.optimization.axial_forces.size() ==
+                app.optimization.elements.size())
+            {
+                const auto force = app.optimization.axial_forces[e];
+                const auto rel_force =
+                    force >= 0.0f ? force / *max_force : force / *min_force;
+                const auto max_color = force >= 0.0f
+                                           ? vec3 {0.25f, 0.25f, 1.0f}
+                                           : vec3 {1.0f, 0.25f, 0.25f};
+                color = rel_force * max_color + 1.0f - rel_force;
+            }
 
-    for (std::size_t i {0}; i < app.optimization.nodes.size(); ++i)
-    {
-        render_circle(app.render_data,
-                      {.center = app.optimization.nodes[i],
-                       .radius = 0.0f,
-                       .thickness = 0.02f,
-                       .color = {1.0f, 1.0f, 1.0f}});
-    }
-
-    // Draw gradient directions
-    /*if (!app.optimization.gradients.empty())
-    {
-        // const auto max_gradient = *std::ranges::max_element(
-        //     app.optimization.gradients,
-        //     [](const vec2 &a, const vec2 &b) { return norm(a) < norm(b); });
-        for (std::size_t i {0}; i < app.optimization.nodes.size(); ++i)
-        {
             render_line(app.render_data,
                         {.a = app.optimization.nodes[i],
-                         .b = app.optimization.nodes[i] -
-                              0.07f * normalize(app.optimization.gradients[i]),
-                         .thickness = 0.015f,
+                         .b = app.optimization.nodes[j],
+                         .thickness = activation * 0.03f,
+                         .color = color});
+        }
+    }
+
+    if (app.draw_nodes)
+    {
+        for (std::size_t i {0}; i < app.optimization.nodes.size(); ++i)
+        {
+            render_circle(app.render_data,
+                          {.center = app.optimization.nodes[i],
+                           .radius = 0.0f,
+                           .thickness = app.node_size,
+                           .color = {1.0f, 1.0f, 1.0f}});
+        }
+    }
+
+    if (app.draw_gradients && !app.optimization.gradients.empty())
+    {
+        for (std::size_t i {0}; i < app.optimization.nodes.size(); ++i)
+        {
+            auto gradient = app.optimization.gradients[i];
+            if (app.normalize_gradients)
+            {
+                const auto norm_gradient = norm(gradient);
+                if (norm_gradient < 1e-9f)
+                {
+                    continue;
+                }
+                gradient =
+                    gradient / norm_gradient * app.normalized_gradients_scale;
+            }
+            else
+            {
+                gradient *= app.gradients_scale;
+            }
+
+            const auto p0 = app.optimization.nodes[i];
+            const auto p1 = p0 + gradient;
+            render_line(app.render_data,
+                        {.a = p0,
+                         .b = p1,
+                         .thickness = 0.01f,
                          .color = {1.0f, 1.0f, 1.0f}});
         }
-    }*/
+    }
 
     glViewport(app.viewport.x,
                app.viewport.y,
