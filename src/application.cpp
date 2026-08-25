@@ -892,7 +892,7 @@ void main_loop_update(Application &app)
         for (std::size_t e {0}; e < app.optimization.elements.size(); ++e)
         {
             const auto [i, j] = app.optimization.elements[e];
-            const auto activation = app.optimization.activations[e];
+            const auto area = app.optimization.areas[e];
 
             vec3 color {1.0f, 1.0f, 1.0f};
             if (app.optimization.axial_forces.size() ==
@@ -910,7 +910,7 @@ void main_loop_update(Application &app)
             render_line(app.render_data,
                         {.a = app.optimization.nodes[i],
                          .b = app.optimization.nodes[j],
-                         .thickness = activation * 0.03f,
+                         .thickness = std::sqrt(area) * 3.0f,
                          .color = color});
         }
     }
@@ -927,11 +927,11 @@ void main_loop_update(Application &app)
         }
     }
 
-    if (app.draw_gradients && !app.optimization.gradients.empty())
+    if (app.draw_gradients && !app.optimization.dC_dx.empty())
     {
         for (std::size_t i {0}; i < app.optimization.nodes.size(); ++i)
         {
-            auto gradient = app.optimization.gradients[i];
+            auto gradient = app.optimization.dC_dx[i];
             if (app.normalize_gradients)
             {
                 const auto norm_gradient = norm(gradient);
