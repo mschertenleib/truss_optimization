@@ -18,9 +18,10 @@ namespace
 {
 
 constexpr float young_modulus {200e9f};
-constexpr float max_area {0.005f * 0.005f};
-constexpr float min_area {1e-3f * max_area};
-constexpr float max_volume {8.0f * max_area};
+constexpr float min_activation {1e-3f};
+constexpr float penalization {2.0f};
+constexpr float max_area {0.02f * 0.02f};
+constexpr float max_volume {10.0f * max_area};
 constexpr float min_coordinate {-0.8f};
 constexpr float max_coordinate {0.8f};
 
@@ -133,7 +134,7 @@ void assemble_stiffness_matrix(Optimization_state &state)
 {
     assert(state.elements.size() == state.element_lengths.size());
     assert(state.elements.size() == state.element_directions.size());
-    assert(state.elements.size() == state.areas.size());
+    assert(state.elements.size() == state.activations.size());
 
     auto *const values = state.stiffness_matrix.valuePtr();
     std::fill_n(values, state.stiffness_matrix.nonZeros(), 0.0f);
@@ -147,7 +148,9 @@ void assemble_stiffness_matrix(Optimization_state &state)
         state.element_lengths[e] = length;
         state.element_directions[e] = dir;
 
-        const auto stiffness_constant = state.areas[e] * young_modulus / length;
+        const auto stiffness_constant =
+            std::pow(state.activations[e], penalization) * max_area *
+            young_modulus / length;
 
         const auto [c, s] = dir;
         const auto cc = c * c;
@@ -216,18 +219,11 @@ void solve_equilibrium_system(Optimization_state &state)
     state.displacements(state.free_dofs) = free_displacements;
 }
 
-void compute_gradients(Optimization_state &state)
+void compute_compliance_and_gradients(Optimization_state &state)
 {
-    state.compliance = 0.0f;
-    state.volume = 0.0f;
-
-    state.dC_dA.resize(state.elements.size());
     state.dC_dx.clear();
     state.dC_dx.resize(state.nodes.size());
-
-    state.dV_dA.resize(state.elements.size());
-    state.dV_dx.clear();
-    state.dV_dx.resize(state.nodes.size());
+    state.compliance = 0.0f;
 
     for (std::size_t e {0}; e < state.elements.size(); ++e)
     {
@@ -238,15 +234,9 @@ void compute_gradients(Optimization_state &state)
                         state.displacements(2 * i + 1)};
         const vec2 u_j {state.displacements(2 * j),
                         state.displacements(2 * j + 1)};
-        const auto area = state.areas[e];
+        const auto area = state.activations[e] * max_area;
         const auto delta_u = u_j - u_i;
         const auto delta = dot(dir, delta_u);
-
-        state.compliance += area * young_modulus / length * delta * delta;
-        state.volume += area * length;
-
-        state.dC_dA[e] = -young_modulus / length * delta * delta;
-
         const auto delta_u_transverse = delta_u - delta * dir;
         const auto dCe_dxj =
             area * young_modulus / (length * length) *
@@ -255,368 +245,138 @@ void compute_gradients(Optimization_state &state)
         state.dC_dx[j] += dCe_dxj;
         state.dC_dx[i] -= dCe_dxj;
 
-        state.dV_dA[e] = length;
-
-        const auto dVe_dxj = area * dir;
-        state.dV_dx[j] += dVe_dxj;
-        state.dV_dx[i] -= dVe_dxj;
+        state.compliance += area * young_modulus / length * delta * delta;
     }
 }
 
-void mma_init(MMA_state &mma,
-              const Eigen::ArrayXf &x_min,
-              const Eigen::ArrayXf &x_max,
-              const MMA_options &options)
+void compute_areas(Optimization_state &state)
 {
-    assert(x_min.size() == x_max.size());
-    assert((x_min <= x_max).all());
-
-    mma.size = x_min.size();
-
-    mma.x_min = x_min;
-    mma.x_max = x_max;
-    mma.range = x_max - x_min;
-    mma.options = options;
-
-    mma.s_old_1.resize(mma.size);
-    mma.s_old_2.resize(mma.size);
-    mma.lower.resize(mma.size);
-    mma.upper.resize(mma.size);
-
-    mma.iteration = 0;
-    mma.initialized = false;
-}
-
-void mma_update_asymptotes(MMA_state &mma, const Eigen::ArrayXf &s)
-{
-    for (Eigen::Index i {0}; i < mma.size; ++i)
+    const auto sqrt_pE = std::sqrt(penalization * young_modulus);
+    std::vector<float> r(state.elements.size());
+    for (std::size_t e {0}; e < state.elements.size(); ++e)
     {
-        const auto product =
-            (s[i] - mma.s_old_1[i]) * (mma.s_old_1[i] - mma.s_old_2[i]);
+        const auto dir = state.element_directions[e];
+        const auto length = state.element_lengths[e];
+        const auto [i, j] = state.elements[e];
+        const vec2 u_i {state.displacements(2 * i),
+                        state.displacements(2 * i + 1)};
+        const vec2 u_j {state.displacements(2 * j),
+                        state.displacements(2 * j + 1)};
+        const auto delta_u = u_j - u_i;
+        const auto delta = dot(dir, delta_u);
 
-        float factor {1.0f};
-        if (product > 0.0f)
+        r[e] = sqrt_pE * std::abs(delta) / length *
+               std::pow(state.activations[e], (penalization + 1.0f) * 0.5f);
+    }
+
+    const auto compute_volume = [&](float mu)
+    {
+        float volume {0.0f};
+
+        for (std::size_t e {0}; e < state.elements.size(); ++e)
         {
-            factor = mma.options.asymptote_inc;
-        }
-        else if (product < 0.0f)
-        {
-            factor = mma.options.asymptote_dec;
+            const auto new_activation =
+                std::clamp(r[e] / mu, min_activation, 1.0f);
+            volume += new_activation * max_area * state.element_lengths[e];
         }
 
-        mma.lower[i] = s[i] - factor * (mma.s_old_1[i] - mma.lower[i]);
-        mma.upper[i] = s[i] + factor * (mma.upper[i] - mma.s_old_1[i]);
-
-        const auto lower_min = s[i] - 10.0f;
-        const auto lower_max = s[i] - 0.01f;
-        const auto upper_min = s[i] + 0.01f;
-        const auto upper_max = s[i] + 10.0f;
-        mma.lower[i] = std::max(mma.lower[i], lower_min);
-        mma.lower[i] = std::min(mma.lower[i], lower_max);
-        mma.upper[i] = std::max(mma.upper[i], upper_min);
-        mma.upper[i] = std::min(mma.upper[i], upper_max);
-    }
-}
-
-/*
- * One MMA outer iteration.
- *
- * Input:
- *   x      : current physical design
- *   f      : objective value f(x)
- *   df     : physical gradient df/dx
- *   g      : scalar constraint, g(x) <= 0
- *   dg     : physical gradient dg/dx
- *
- * Output:
- *   x_new  : next physical design
- *
- * Requirement:
- *   current design should satisfy g <= 0
- *   for this specialized no-slack version.
- */
-[[nodiscard]] Eigen::ArrayXf mma_update(MMA_state &mma,
-                                        const Eigen::ArrayXf &x,
-                                        float f,
-                                        const Eigen::ArrayXf &df,
-                                        float g,
-                                        const Eigen::ArrayXf &dg)
-{
-    assert(x.size() == df.size());
-    assert(x.size() == dg.size());
-
-    if (g > 1e-9f)
-    {
-        throw std::runtime_error(
-            "mma_update requires a feasible current design");
-    }
-
-    // Convert physical design to normalized [0, 1] variables
-    Eigen::ArrayXf s {(x - mma.x_min) / mma.range};
-    s = s.max(0.0f).min(1.0f);
-
-    // Gradients with respect to normalized variables
-    const Eigen::ArrayXf df_ds {df * mma.range};
-    const Eigen::ArrayXf dg_ds {dg * mma.range};
-
-    // First/second iteration: use initial asymptotes
-    if (mma.iteration <= 1)
-    {
-        mma.lower = s - mma.options.asymptote_init;
-        mma.upper = s + mma.options.asymptote_init;
-    }
-    else
-    {
-        mma_update_asymptotes(mma, s);
-    }
-
-    // Subproblem bounds
-    Eigen::ArrayXf alpha(mma.size);
-    Eigen::ArrayXf beta(mma.size);
-
-    for (Eigen::Index i {0}; i < mma.size; ++i)
-    {
-        const auto lower_bound =
-            mma.lower[i] + mma.options.albefa * (s[i] - mma.lower[i]);
-        const auto move_lower = s[i] - mma.options.move;
-
-        alpha[i] = std::max({lower_bound, move_lower, 0.0f});
-
-        const auto upper_bound =
-            mma.upper[i] - mma.options.albefa * (mma.upper[i] - s[i]);
-        const auto move_upper = s[i] + mma.options.move;
-
-        beta[i] = std::min({upper_bound, move_upper, 1.0f});
-    }
-
-    // MMA reciprocal approximation
-    //
-    // p0, q0: objective
-    // p1, q1: constraint
-
-    Eigen::ArrayXf p0(mma.size);
-    Eigen::ArrayXf q0(mma.size);
-    Eigen::ArrayXf p1(mma.size);
-    Eigen::ArrayXf q1(mma.size);
-
-    for (Eigen::Index i {0}; i < mma.size; ++i)
-    {
-        const auto du = mma.upper[i] - s[i];
-        const auto dl = s[i] - mma.lower[i];
-
-        if (du <= 0.0f || dl <= 0.0f)
-        {
-            throw std::runtime_error("Invalid MMA asymptote");
-        }
-
-        const auto pos_f = std::max(df_ds[i], 0.0f);
-        const auto neg_f = std::max(-df_ds[i], 0.0f);
-        const auto pos_g = std::max(dg_ds[i], 0.0f);
-        const auto neg_g = std::max(-dg_ds[i], 0.0f);
-
-        // Standard MMA regularization:
-        //
-        // pq = 0.001 * (positive + negative) + raa0 / (xmax - xmin)
-        //
-        // Here normalized variable range = 1
-        const auto pq_f = 0.001f * (pos_f + neg_f) + mma.options.raa0;
-        const auto pq_g = 0.001f * (pos_g + neg_g) + mma.options.raa0;
-
-        p0[i] = (pos_f + pq_f) * du * du;
-        q0[i] = (neg_f + pq_f) * dl * dl;
-        p1[i] = (pos_g + pq_g) * du * du;
-        q1[i] = (neg_g + pq_g) * dl * dl;
-    }
-
-    // Approximation constants, ensures:
-    // f_tilde(s) = f(s_current)
-    // g_tilde(s) = g(s_current)
-
-    auto r0 = f;
-    auto r1 = g;
-
-    for (Eigen::Index i {0}; i < mma.size; ++i)
-    {
-        const auto du = mma.upper[i] - s[i];
-        const auto dl = s[i] - mma.lower[i];
-        r0 -= p0[i] / du + q0[i] / dl;
-        r1 -= p1[i] / du + q1[i] / dl;
-    }
-
-    // For a fixed lambda, minimize the separable Lagrangian
-    const auto s_of_lambda = [&](float lambda) -> Eigen::ArrayXf
-    {
-        Eigen::ArrayXf result(mma.size);
-
-        for (Eigen::Index i {0}; i < mma.size; ++i)
-        {
-            const auto P = p0[i] + lambda * p1[i];
-            const auto Q = q0[i] + lambda * q1[i];
-            const auto sqrt_P = std::sqrt(P);
-            const auto sqrt_Q = std::sqrt(Q);
-
-            // Unconstrained minimizer:
-            // sqrt(P) / (U - s) = sqrt(Q) / (s - L)
-            auto si = (sqrt_P * mma.lower[i] + sqrt_Q * mma.upper[i]) /
-                      (sqrt_P + sqrt_Q);
-            si = std::max(alpha[i], std::min(beta[i], si));
-
-            result[i] = si;
-        }
-
-        return result;
+        return volume;
     };
 
-    // Evaluate approximated global constraint
-    const auto g_tilde = [&](float lambda) -> float
-    {
-        const auto s_trial = s_of_lambda(lambda);
+    float mu_lo {0.0f};
+    float mu_hi {1.0f};
 
-        auto value = r1;
-        for (Eigen::Index i {0}; i < mma.size; ++i)
+    // Increase mu until the volume is below the target
+    while (compute_volume(mu_hi) > max_volume)
+    {
+        mu_hi *= 2.0f;
+    }
+
+    for (int iter {0}; iter < 100; ++iter)
+    {
+        const auto mu_mid = 0.5f * (mu_lo + mu_hi);
+
+        if (compute_volume(mu_mid) > max_volume)
         {
-            value += p1[i] / (mma.upper[i] - s_trial[i]);
-            value += q1[i] / (s_trial[i] - mma.lower[i]);
+            mu_lo = mu_mid;
+        }
+        else
+        {
+            mu_hi = mu_mid;
         }
 
-        return value;
-    };
-
-    float g_check = r1;
-    for (int j = 0; j < mma.size; ++j)
-    {
-        g_check +=
-            p1[j] / (mma.upper[j] - s[j]) + q1[j] / (s[j] - mma.lower[j]);
-    }
-
-    std::cout << "g actual      = " << g << '\n'
-              << "g_tilde(s)    = " << g_check << '\n'
-              << "difference    = " << g_check - g << '\n';
-
-    float max_lower_violation = 0.0;
-    float max_upper_violation = 0.0;
-    for (int j = 0; j < mma.size; ++j)
-    {
-        max_lower_violation = std::max(max_lower_violation, alpha[j] - s[j]);
-
-        max_upper_violation = std::max(max_upper_violation, s[j] - beta[j]);
-    }
-
-    std::cout << "max lower violation = " << max_lower_violation << '\n';
-    std::cout << "max upper violation = " << max_upper_violation << '\n';
-
-    float worst_low = 0.0;
-    float worst_upp = 0.0;
-    for (int j = 0; j < mma.size; ++j)
-    {
-        worst_low = std::max(worst_low, mma.lower[j] - alpha[j]);
-
-        worst_upp = std::max(worst_upp, beta[j] - mma.upper[j]);
-    }
-    float min_gap_low = std::numeric_limits<float>::infinity();
-    float min_gap_upp = std::numeric_limits<float>::infinity();
-    for (int j = 0; j < mma.size; ++j)
-    {
-        min_gap_low = std::min(min_gap_low, s[j] - mma.lower[j]);
-
-        min_gap_upp = std::min(min_gap_upp, mma.upper[j] - s[j]);
-    }
-    std::cout << "worst low = " << worst_low << '\n';
-    std::cout << "worst upp = " << worst_upp << '\n';
-    std::cout << "min gap low = " << min_gap_low << '\n';
-    std::cout << "min gap upp = " << min_gap_upp << '\n';
-
-    double g_terms = 0.0;
-
-    for (int j = 0; j < mma.size; ++j)
-    {
-        g_terms +=
-            p1[j] / (mma.upper[j] - s[j]) + q1[j] / (s[j] - mma.lower[j]);
-    }
-
-    std::cout << "|r1|       = " << std::abs(r1) << '\n'
-              << "|g_terms|  = " << std::abs(g_terms) << '\n'
-              << "|g|        = " << std::abs(g) << '\n';
-
-    // First check the unconstrained solution lambda = 0
-    float lambda {0.0f};
-
-    if (g_tilde(0.0f) > 0.0f)
-    {
-        // Constraint active.
-        // Find lambda_hi such that g_tilde(lambda_hi) <= 0
-
-        float lambda_lo {0.0f};
-        float lambda_hi {1.0f};
-        bool bracketed {false};
-
-        std::cout << "Bracketing\n";
-        for (int i {0}; i < mma.options.max_expand; ++i)
+        if (mu_hi - mu_lo <= 1e-4f * (1.0f + mu_hi))
         {
-            std::cout << lambda_hi << " -> " << s_of_lambda(lambda_hi).mean()
-                      << ' ' << s_of_lambda(lambda_hi).abs().maxCoeff() << ' '
-                      << g_tilde(lambda_hi) << '\n';
-            if (g_tilde(lambda_hi) <= 0.0f)
-            {
-                bracketed = true;
-                std::cout << "Bracketed\n";
-                break;
-            }
-
-            lambda_hi *= 2.0f;
+            break;
         }
-
-        if (!bracketed)
-        {
-            throw std::runtime_error("Could not bracket MMA dual variable");
-        }
-
-        // Scalar bisection
-        for (int iter {0}; iter < mma.options.max_bisection; ++iter)
-        {
-            const auto lambda_mid = 0.5f * (lambda_lo + lambda_hi);
-            if (g_tilde(lambda_mid) > 0.0f)
-            {
-                lambda_lo = lambda_mid;
-            }
-            else
-            {
-                lambda_hi = lambda_mid;
-            }
-
-            if (lambda_hi - lambda_lo <=
-                mma.options.lambda_tol * (1.0f + lambda_hi))
-            {
-                break;
-            }
-        }
-
-        lambda = 0.5f * (lambda_lo + lambda_hi);
     }
+    const auto mu = 0.5f * (mu_lo + mu_hi);
+    std::cout << "mu=" << mu << '\n';
 
-    // Recover the physical variables
-    const Eigen::ArrayXf s_new {s_of_lambda(lambda)};
-    const Eigen::ArrayXf x_new {mma.x_min + s_new * mma.range};
+    state.new_activations.resize(state.elements.size());
+    state.axial_forces.resize(state.elements.size());
+    for (std::size_t e {0}; e < state.elements.size(); ++e)
+    {
+        state.new_activations[e] = std::clamp(r[e] / mu, min_activation, 1.0f);
 
-    return x_new;
+        const auto dir = state.element_directions[e];
+        const auto length = state.element_lengths[e];
+        const auto [i, j] = state.elements[e];
+        const vec2 u_i {state.displacements(2 * i),
+                        state.displacements(2 * i + 1)};
+        const vec2 u_j {state.displacements(2 * j),
+                        state.displacements(2 * j + 1)};
+        const auto area = state.activations[e] * max_area;
+        const auto delta_u = u_j - u_i;
+        const auto delta = dot(dir, delta_u);
+        state.axial_forces[e] = area * young_modulus / length * delta;
+    }
 }
 
-void mma_accept(MMA_state &mma, const Eigen::ArrayXf &x)
+void update_geometry(Optimization_state &state)
 {
-    const Eigen::ArrayXf s {(x - mma.x_min) / mma.range};
-
-    if (mma.iteration == 0)
+    float q_max {0.0f};
+    for (const auto &g : state.dC_dx)
     {
-        mma.s_old_2 = s;
-        mma.s_old_1 = s;
-    }
-    else
-    {
-        mma.s_old_2 = mma.s_old_1;
-        mma.s_old_1 = s;
+        const auto q = -g;
+        q_max = std::max(norm(q), q_max);
     }
 
-    ++mma.iteration;
+    std::uint32_t immovable_dof_index {0};
+    const auto is_next_immovable_dof = [&](std::uint32_t dof)
+    {
+        if (immovable_dof_index < state.immovable_dofs.size() &&
+            dof == state.immovable_dofs[immovable_dof_index])
+        {
+            ++immovable_dof_index;
+            return true;
+        }
+        return false;
+    };
+
+    state.predicted_compliance_reduction = 0.0f;
+    for (std::uint32_t i {0}; i < state.nodes.size(); ++i)
+    {
+        const auto x = state.nodes[i];
+        const auto g = state.dC_dx[i];
+        const auto q = -g;
+        const auto q_hat = q / q_max;
+        const auto x_raw = x + state.delta_x * q_hat;
+
+        vec2 x_cand {std::clamp(x_raw.x, min_coordinate, max_coordinate),
+                     std::clamp(x_raw.y, min_coordinate, max_coordinate)};
+        if (is_next_immovable_dof(i * 2))
+        {
+            x_cand.x = x.x;
+        }
+        if (is_next_immovable_dof(i * 2 + 1))
+        {
+            x_cand.y = x.y;
+        }
+
+        state.predicted_compliance_reduction -= dot(g, x_cand - x);
+        state.nodes[i] = x_cand;
+    }
 }
 
 void make_triangulation(const std::vector<vec2> &nodes,
@@ -717,102 +477,16 @@ void optimization_init(const std::vector<vec2> &nodes,
     {
         total_length += norm(state.nodes[j] - state.nodes[i]);
     }
-    state.areas.resize(state.elements.size());
-    std::ranges::fill(state.areas, max_volume / total_length * 0.5f);
+    state.activations.resize(state.elements.size());
+    std::ranges::fill(state.activations,
+                      max_volume / (max_area * total_length));
 
     state.sparsity_stale = true;
 
-    const auto num_areas = static_cast<Eigen::Index>(state.areas.size());
-    const auto num_coordinates = static_cast<Eigen::Index>(
-        state.nodes.size() * 2 - state.immovable_dofs.size());
-    const auto num_design_variables = num_areas + num_coordinates;
-    Eigen::ArrayXf x_min(num_design_variables);
-    Eigen::ArrayXf x_max(num_design_variables);
-    x_min.block(0, 0, num_areas, 1) = min_area;
-    x_max.block(0, 0, num_areas, 1) = max_area;
-    x_min.block(num_areas, 0, num_coordinates, 1) = min_coordinate;
-    x_max.block(num_areas, 0, num_coordinates, 1) = max_coordinate;
-    mma_init(state.mma, x_min, x_max, MMA_options {});
-}
-
-void compute_activations(Optimization_state &state)
-{
-    // Compute activations by equal stress projection, i.e. the activations that
-    // would cause the structure to be fully equally stressed.
-
-    assert(state.element_lengths.size() == state.areas.size());
-
-    state.axial_forces.resize(state.elements.size());
-    for (std::size_t e {0}; e < state.elements.size(); ++e)
-    {
-        const auto [node_i, node_j] = state.elements[e];
-        const vec2 relative_displacement {
-            state.displacements(2 * node_j) - state.displacements(2 * node_i),
-            state.displacements(2 * node_j + 1) -
-                state.displacements(2 * node_i + 1)};
-        const auto axial_extension =
-            dot(state.element_directions[e], relative_displacement);
-        const auto stiffness_constant =
-            state.areas[e] * young_modulus / state.element_lengths[e];
-        state.axial_forces[e] = stiffness_constant * axial_extension;
-    }
-
-    float sum {0.0f};
-    for (std::size_t e {0}; e < state.areas.size(); ++e)
-    {
-        sum += state.element_lengths[e] * std::abs(state.axial_forces[e]);
-    }
-    const auto factor = max_volume / sum;
-
-    for (std::size_t e {0}; e < state.areas.size(); ++e)
-    {
-        state.areas[e] = std::clamp(
-            std::abs(state.axial_forces[e]) * factor, min_area, max_area);
-    }
-}
-
-void geometry_step(Optimization_state &state)
-{
-    constexpr float gamma {10000.0f};
-    constexpr float move_limit {0.02f};
-
-    constexpr auto clamp_to_domain = [](const vec2 &pos)
-    {
-        // FIXME: this shouldn't be hardcoded
-        return vec2 {std::clamp(pos.x, -0.8f, 0.8f),
-                     std::clamp(pos.y, -0.8f, 0.8f)};
-    };
-
-    std::uint32_t immovable_dof_index {0};
-    const auto is_next_immovable_dof =
-        [&immovable_dof_index, &state](std::uint32_t dof)
-    {
-        if (immovable_dof_index < state.immovable_dofs.size() &&
-            dof == state.immovable_dofs[immovable_dof_index])
-        {
-            ++immovable_dof_index;
-            return true;
-        }
-        return false;
-    };
-    for (std::uint32_t i {0}; i < state.nodes.size(); ++i)
-    {
-        auto step = -gamma * state.dC_dx[i];
-        if (const auto norm_step = norm(step); norm_step > move_limit)
-        {
-            step *= move_limit / norm_step;
-        }
-
-        const auto new_pos = clamp_to_domain(state.nodes[i] + step);
-        if (!is_next_immovable_dof(i * 2))
-        {
-            state.nodes[i].x = new_pos.x;
-        }
-        if (!is_next_immovable_dof(i * 2 + 1))
-        {
-            state.nodes[i].y = new_pos.y;
-        }
-    }
+    const auto mean_length =
+        total_length / static_cast<float>(state.elements.size());
+    state.delta_x = 0.05f * mean_length;
+    state.step = 0;
 }
 
 } // namespace
@@ -832,7 +506,7 @@ void optimization_create_problem(Optimization_state &state, Problem problem)
 
         const std::vector<std::uint32_t> immovable_dofs {0, 1, 2, 3, 4, 5};
 
-        constexpr std::uint32_t num_free_nodes {200};
+        constexpr std::uint32_t num_free_nodes {1000};
         std::minstd_rand rng(17657575);
         std::uniform_real_distribution<float> x(-0.8f, 0.8f);
         std::uniform_real_distribution<float> y(-0.8f, 0.8f);
@@ -940,23 +614,6 @@ void optimization_create_problem(Optimization_state &state, Problem problem)
 
 void optimization_step(Optimization_state &state)
 {
-    /*
-    Full optimization procedure:
-    - Initial problem setup
-    - Loop:
-        - If topology changed:
-            - Rebuild sparsity
-            - Symbolically decompose K
-
-        - Assemble K (only update values, same sparsity)
-        - Numerically decompose K
-        - Solve linear system
-        - Compute sensitivities (gradients of compliance w.r.t activations and
-    node positions)
-        - Update design variables (MMA?)
-        - If necessary, from time to time, update topology
-    */
-
     if (state.sparsity_stale)
     {
         rebuild_stiffness_matrix_sparsity(state);
@@ -967,191 +624,44 @@ void optimization_step(Optimization_state &state)
     assemble_stiffness_matrix(state);
     numerically_decompose_stiffness_matrix(state);
     solve_equilibrium_system(state);
-    compute_gradients(state);
 
-    const auto num_areas = static_cast<Eigen::Index>(state.areas.size());
-    const auto num_coordinates = static_cast<Eigen::Index>(
-        state.nodes.size() * 2 - state.immovable_dofs.size());
-    const auto num_design_variables = num_areas + num_coordinates;
-    const auto C = state.compliance;
-    const auto g = state.volume / max_volume - 1.0f;
-    Eigen::ArrayXf x(num_design_variables);
-    Eigen::ArrayXf dC(num_design_variables);
-    Eigen::ArrayXf dg(num_design_variables);
-    for (Eigen::Index i {0}; i < num_areas; ++i)
+    const auto prev_compliance = state.compliance;
+    compute_compliance_and_gradients(state);
+    if (state.step > 0)
     {
-        x[i] = state.areas[i];
-        dC[i] = state.dC_dA[i];
-        dg[i] = state.dV_dA[i];
+        const auto compliance_reduction = prev_compliance - state.compliance;
+        const auto trust_region_ratio =
+            compliance_reduction / state.predicted_compliance_reduction;
+        constexpr float r_low {0.25f};
+        constexpr float r_high {0.75f};
+        constexpr float gamma_dec {0.5f};
+        constexpr float gamma_inc {1.5f};
+        if (trust_region_ratio < r_low)
+            state.delta_x = gamma_dec * state.delta_x;
+        else if (trust_region_ratio > r_high)
+            state.delta_x = gamma_inc * state.delta_x;
+
+        std::cout << std::format(
+            "ratio={} delta={}\n", trust_region_ratio, state.delta_x);
     }
-    std::uint32_t immovable_dof_index {0};
-    std::uint32_t dof_index {0};
+
+    compute_areas(state);
+
+    // update_geometry(state);
+
+    float max_diff {0.0f};
     for (std::uint32_t i {0}; i < state.nodes.size(); ++i)
     {
-        if (immovable_dof_index < state.immovable_dofs.size() &&
-            i * 2 == state.immovable_dofs[immovable_dof_index])
+        const auto diff =
+            std::abs(state.new_activations[i] - state.activations[i]);
+        if (diff > max_diff)
         {
-            ++immovable_dof_index;
-        }
-        else
-        {
-            x[num_areas + dof_index] = state.nodes[i].x;
-            dC[num_areas + dof_index] = state.dC_dx[i].x;
-            dg[num_areas + dof_index] = state.dV_dx[i].x;
-            ++dof_index;
-        }
-
-        if (immovable_dof_index < state.immovable_dofs.size() &&
-            i * 2 + 1 == state.immovable_dofs[immovable_dof_index])
-        {
-            ++immovable_dof_index;
-        }
-        else
-        {
-            x[num_areas + dof_index] = state.nodes[i].y;
-            dC[num_areas + dof_index] = state.dC_dx[i].y;
-            dg[num_areas + dof_index] = state.dV_dx[i].y;
-            ++dof_index;
+            max_diff = diff;
         }
     }
+    std::cout << "|A_new-A|=" << max_diff << '\n';
 
-    float max_element = -1e7;
-    for (const auto &v : state.dC_dx)
-    {
-        if (const auto n = norm(v); n > max_element)
-        {
-            max_element = n;
-        }
-    }
-    std::cout << "min L = " << *std::ranges::min_element(state.element_lengths)
-              << ", max |dC/dx| = " << max_element << '\n';
+    state.activations = state.new_activations;
 
-    auto x_candidate = mma_update(state.mma, x, C, dC, g, dg);
-
-    const auto volume_constraint = [&](const Eigen::ArrayXf &x)
-    {
-        std::vector<float> areas(num_areas);
-        std::vector<vec2> nodes {state.nodes};
-
-        for (Eigen::Index i {0}; i < num_areas; ++i)
-        {
-            areas[i] = x_candidate[i];
-        }
-        immovable_dof_index = 0;
-        dof_index = 0;
-        for (std::uint32_t i {0}; i < state.nodes.size(); ++i)
-        {
-            if (immovable_dof_index < state.immovable_dofs.size() &&
-                i * 2 == state.immovable_dofs[immovable_dof_index])
-            {
-                ++immovable_dof_index;
-            }
-            else
-            {
-                nodes[i].x = x_candidate[num_areas + dof_index];
-                ++dof_index;
-            }
-
-            if (immovable_dof_index < state.immovable_dofs.size() &&
-                i * 2 + 1 == state.immovable_dofs[immovable_dof_index])
-            {
-                ++immovable_dof_index;
-            }
-            else
-            {
-                nodes[i].y = x_candidate[num_areas + dof_index];
-                ++dof_index;
-            }
-        }
-
-        float volume {0.0f};
-        for (std::size_t e {0}; e < state.elements.size(); ++e)
-        {
-            const auto [node_i, node_j] = state.elements[e];
-            const auto length = norm(nodes[node_j] - nodes[node_i]);
-            volume += areas[e] * length;
-        }
-
-        return volume / max_volume - 1.0f;
-    };
-
-    const auto backtrack = [&]()
-    {
-        const auto g_candidate = volume_constraint(x_candidate);
-        if (g_candidate <= 0.0f)
-        {
-            return x_candidate;
-        }
-
-        float alpha {1.0f};
-        while (alpha > 1e-6f)
-        {
-            alpha *= 0.5f;
-
-            const Eigen::ArrayXf x_trial {x + alpha * (x_candidate - x)};
-            const auto g_trial = volume_constraint(x_trial);
-
-            if (g_trial <= 0.0f)
-            {
-                return x_trial;
-            }
-        }
-
-        return x;
-    };
-    const auto x_new = backtrack();
-
-    mma_accept(state.mma, x_new);
-
-    std::cout << std::format(
-                     "[{} {}] [{} {}]    {} {}\n",
-                     x_new.block(0, 0, num_areas, 1).minCoeff(),
-                     x_new.block(0, 0, num_areas, 1).maxCoeff(),
-                     x_new.block(num_areas, 0, num_coordinates, 1).minCoeff(),
-                     x_new.block(num_areas, 0, num_coordinates, 1).maxCoeff(),
-                     (x_new.block(0, 0, num_areas, 1) -
-                      x.block(0, 0, num_areas, 1))
-                         .abs()
-                         .maxCoeff(),
-                     (x_new.block(num_areas, 0, num_coordinates, 1) -
-                      x.block(num_areas, 0, num_coordinates, 1))
-                         .abs()
-                         .maxCoeff())
-              << std::flush;
-
-    for (Eigen::Index i {0}; i < num_areas; ++i)
-    {
-        state.areas[i] = x_new[i];
-    }
-    immovable_dof_index = 0;
-    dof_index = 0;
-    for (std::uint32_t i {0}; i < state.nodes.size(); ++i)
-    {
-        if (immovable_dof_index < state.immovable_dofs.size() &&
-            i * 2 == state.immovable_dofs[immovable_dof_index])
-        {
-            ++immovable_dof_index;
-        }
-        else
-        {
-            state.nodes[i].x = x_new[num_areas + dof_index];
-            ++dof_index;
-        }
-
-        if (immovable_dof_index < state.immovable_dofs.size() &&
-            i * 2 + 1 == state.immovable_dofs[immovable_dof_index])
-        {
-            ++immovable_dof_index;
-        }
-        else
-        {
-            state.nodes[i].y = x_new[num_areas + dof_index];
-            ++dof_index;
-        }
-    }
-
-    // throw std::runtime_error("");
-
-    // compute_activations(state);
-    // geometry_step(state);
+    ++state.step;
 }

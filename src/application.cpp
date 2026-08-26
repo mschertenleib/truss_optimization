@@ -892,7 +892,7 @@ void main_loop_update(Application &app)
         for (std::size_t e {0}; e < app.optimization.elements.size(); ++e)
         {
             const auto [i, j] = app.optimization.elements[e];
-            const auto area = app.optimization.areas[e];
+            const auto activation = app.optimization.activations[e];
 
             vec3 color {1.0f, 1.0f, 1.0f};
             if (app.optimization.axial_forces.size() ==
@@ -910,7 +910,7 @@ void main_loop_update(Application &app)
             render_line(app.render_data,
                         {.a = app.optimization.nodes[i],
                          .b = app.optimization.nodes[j],
-                         .thickness = std::sqrt(area) * 3.0f,
+                         .thickness = activation * 0.02f,
                          .color = color});
         }
     }
