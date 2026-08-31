@@ -18,7 +18,8 @@ namespace
 {
 
 constexpr float young_modulus {200e9f};
-constexpr float min_activation {1e-3f};
+constexpr float min_stiffness_activation {1e-5f};
+constexpr float activation_move_limit {0.25f};
 constexpr float penalization {2.0f};
 constexpr float max_area {0.02f * 0.02f};
 constexpr float max_volume {10.0f * max_area};
@@ -42,17 +43,15 @@ to_string(Eigen::ComputationInfo computation_info) noexcept
 
 void rebuild_stiffness_matrix_sparsity(Optimization_state &state)
 {
-    state.element_k_indices.resize(state.elements.size());
-    state.element_lengths.resize(state.elements.size());
-    state.element_directions.resize(state.elements.size());
+    const auto num_elements = state.elements.size();
 
     std::vector<Eigen::Triplet<float>> triplets;
-    triplets.reserve(state.elements.size() * 16);
+    triplets.reserve(num_elements * 16);
 
     std::vector<std::array<std::uint32_t, 4>> element_dofs;
-    element_dofs.reserve(state.elements.size());
+    element_dofs.reserve(num_elements);
 
-    for (std::size_t e {0}; e < state.elements.size(); ++e)
+    for (std::size_t e {0}; e < num_elements; ++e)
     {
         const auto [node_i, node_j] = state.elements[e];
         const std::array<std::uint32_t, 4> e_dofs {
@@ -93,10 +92,12 @@ void rebuild_stiffness_matrix_sparsity(Optimization_state &state)
     // and do a linear search instead
     state.stiffness_matrix.sortInnerIndices();
 
+    state.element_k_indices.resize(num_elements);
+
     const auto *const outer = state.stiffness_matrix.outerIndexPtr();
     const auto *const inner = state.stiffness_matrix.innerIndexPtr();
 
-    for (std::size_t e {0}; e < state.elements.size(); ++e)
+    for (std::size_t e {0}; e < num_elements; ++e)
     {
         const auto &e_dofs = element_dofs[e];
         auto &k_indices = state.element_k_indices[e];
@@ -128,12 +129,17 @@ void rebuild_stiffness_matrix_sparsity(Optimization_state &state)
             }
         }
     }
+
+    state.element_directions.resize(num_elements);
+    state.element_lengths.resize(num_elements);
+    state.activations.resize(num_elements);
 }
 
 void assemble_stiffness_matrix(Optimization_state &state)
 {
-    assert(state.elements.size() == state.element_lengths.size());
+    assert(state.elements.size() == state.element_k_indices.size());
     assert(state.elements.size() == state.element_directions.size());
+    assert(state.elements.size() == state.element_lengths.size());
     assert(state.elements.size() == state.activations.size());
 
     auto *const values = state.stiffness_matrix.valuePtr();
@@ -141,45 +147,48 @@ void assemble_stiffness_matrix(Optimization_state &state)
 
     for (std::size_t e {0}; e < state.elements.size(); ++e)
     {
-        const auto [node_i, node_j] = state.elements[e];
-        const auto vec = state.nodes[node_j] - state.nodes[node_i];
+        const auto [i, j] = state.elements[e];
+        const auto vec = state.nodes[j] - state.nodes[i];
         const auto length = norm(vec);
         const auto dir = vec / length;
         state.element_lengths[e] = length;
         state.element_directions[e] = dir;
 
+        const auto stiffness_interpolation =
+            min_stiffness_activation +
+            std::pow(state.activations[e], penalization) *
+                (1.0f - min_stiffness_activation);
         const auto stiffness_constant =
-            std::pow(state.activations[e], penalization) * max_area *
-            young_modulus / length;
+            stiffness_interpolation * max_area * young_modulus / length;
 
         const auto [c, s] = dir;
         const auto cc = c * c;
         const auto ss = s * s;
         const auto cs = c * s;
-        const float local[16] {cc,
-                               cs,
-                               -cc,
-                               -cs,
-                               cs,
-                               ss,
-                               -cs,
-                               -ss,
-                               -cc,
-                               -cs,
-                               cc,
-                               cs,
-                               -cs,
-                               -ss,
-                               cs,
-                               ss};
+        const std::array<float, 16> local {cc,
+                                           cs,
+                                           -cc,
+                                           -cs,
+                                           cs,
+                                           ss,
+                                           -cs,
+                                           -ss,
+                                           -cc,
+                                           -cs,
+                                           cc,
+                                           cs,
+                                           -cs,
+                                           -ss,
+                                           cs,
+                                           ss};
 
         const auto &k_indices = state.element_k_indices[e];
-        for (std::size_t l {0}; l < 16; ++l)
+        for (std::size_t k {0}; k < 16; ++k)
         {
-            const auto pos = k_indices[l];
+            const auto pos = k_indices[k];
             if (pos != invalid_index)
             {
-                values[pos] += stiffness_constant * local[l];
+                values[pos] += stiffness_constant * local[k];
             }
         }
     }
@@ -219,11 +228,18 @@ void solve_equilibrium_system(Optimization_state &state)
     state.displacements(state.free_dofs) = free_displacements;
 }
 
+// FIXME: change function name
 void compute_compliance_and_gradients(Optimization_state &state)
 {
-    state.dC_dx.clear();
-    state.dC_dx.resize(state.nodes.size());
+    // FIXME: move all displacement-derived values here (axial_forces, deltas if
+    // necessary, etc.)
+
+    state.axial_forces.resize(
+        state.elements.size()); // TODO: these should probably be sized only
+                                // when elements (connectivity) change
     state.compliance = 0.0f;
+    state.dC_dx.clear(); // TODO: this should really just be a fill with zeros
+    state.dC_dx.resize(state.nodes.size());
 
     for (std::size_t e {0}; e < state.elements.size(); ++e)
     {
@@ -237,21 +253,24 @@ void compute_compliance_and_gradients(Optimization_state &state)
         const auto area = state.activations[e] * max_area;
         const auto delta_u = u_j - u_i;
         const auto delta = dot(dir, delta_u);
+
+        const auto force = area * young_modulus / length * delta;
+        state.axial_forces[e] = force;
+        state.compliance += force * delta;
+
         const auto delta_u_transverse = delta_u - delta * dir;
         const auto dCe_dxj =
             area * young_modulus / (length * length) *
             ((delta * delta) * dir - (2.0f * delta) * delta_u_transverse);
-
         state.dC_dx[j] += dCe_dxj;
         state.dC_dx[i] -= dCe_dxj;
-
-        state.compliance += area * young_modulus / length * delta * delta;
     }
 }
 
 void compute_areas(Optimization_state &state)
 {
-    const auto sqrt_pE = std::sqrt(penalization * young_modulus);
+    const auto sqrt_factor = std::sqrt((1.0f - min_stiffness_activation) *
+                                       penalization * young_modulus);
     std::vector<float> r(state.elements.size());
     for (std::size_t e {0}; e < state.elements.size(); ++e)
     {
@@ -265,7 +284,12 @@ void compute_areas(Optimization_state &state)
         const auto delta_u = u_j - u_i;
         const auto delta = dot(dir, delta_u);
 
-        r[e] = sqrt_pE * std::abs(delta) / length *
+        // FIXME: this might be wrong with the new stiffness interpolation.
+        // Currently it is 0 if activations are 0, but there must be a way to
+        // "re-activate" activations that were 0. Also, we should check if this
+        // is also a problem in the MATLAB code, and how they do it, since it
+        // ends up being very similar to what we do.
+        r[e] = sqrt_factor * std::abs(delta) / length *
                std::pow(state.activations[e], (penalization + 1.0f) * 0.5f);
     }
 
@@ -275,8 +299,12 @@ void compute_areas(Optimization_state &state)
 
         for (std::size_t e {0}; e < state.elements.size(); ++e)
         {
+            const auto lower =
+                state.activations[e] / (1.0f + activation_move_limit);
+            const auto upper =
+                state.activations[e] * (1.0f + activation_move_limit);
             const auto new_activation =
-                std::clamp(r[e] / mu, min_activation, 1.0f);
+                std::clamp(std::clamp(r[e] / mu, lower, upper), 0.0f, 1.0f);
             volume += new_activation * max_area * state.element_lengths[e];
         }
 
@@ -287,9 +315,16 @@ void compute_areas(Optimization_state &state)
     float mu_hi {1.0f};
 
     // Increase mu until the volume is below the target
+    int bound_iter {0};
     while (compute_volume(mu_hi) > max_volume)
     {
         mu_hi *= 2.0f;
+        ++bound_iter;
+        if (bound_iter >= 20)
+        {
+            std::cerr << "Volume constraint not feasible\n";
+            break;
+        }
     }
 
     for (int iter {0}; iter < 100; ++iter)
@@ -314,22 +349,15 @@ void compute_areas(Optimization_state &state)
     std::cout << "mu=" << mu << '\n';
 
     state.new_activations.resize(state.elements.size());
-    state.axial_forces.resize(state.elements.size());
     for (std::size_t e {0}; e < state.elements.size(); ++e)
     {
-        state.new_activations[e] = std::clamp(r[e] / mu, min_activation, 1.0f);
-
-        const auto dir = state.element_directions[e];
-        const auto length = state.element_lengths[e];
-        const auto [i, j] = state.elements[e];
-        const vec2 u_i {state.displacements(2 * i),
-                        state.displacements(2 * i + 1)};
-        const vec2 u_j {state.displacements(2 * j),
-                        state.displacements(2 * j + 1)};
-        const auto area = state.activations[e] * max_area;
-        const auto delta_u = u_j - u_i;
-        const auto delta = dot(dir, delta_u);
-        state.axial_forces[e] = area * young_modulus / length * delta;
+        // FIXME: code duplication
+        const auto lower =
+            state.activations[e] / (1.0f + activation_move_limit);
+        const auto upper =
+            state.activations[e] * (1.0f + activation_move_limit);
+        state.new_activations[e] =
+            std::clamp(std::clamp(r[e] / mu, lower, upper), 0.0f, 1.0f);
     }
 }
 
@@ -342,20 +370,8 @@ void update_geometry(Optimization_state &state)
         q_max = std::max(norm(q), q_max);
     }
 
-    std::uint32_t immovable_dof_index {0};
-    const auto is_next_immovable_dof = [&](std::uint32_t dof)
-    {
-        if (immovable_dof_index < state.immovable_dofs.size() &&
-            dof == state.immovable_dofs[immovable_dof_index])
-        {
-            ++immovable_dof_index;
-            return true;
-        }
-        return false;
-    };
-
     state.predicted_compliance_reduction = 0.0f;
-    for (std::uint32_t i {0}; i < state.nodes.size(); ++i)
+    for (const auto i : state.movable_nodes)
     {
         const auto x = state.nodes[i];
         const auto g = state.dC_dx[i];
@@ -365,14 +381,6 @@ void update_geometry(Optimization_state &state)
 
         vec2 x_cand {std::clamp(x_raw.x, min_coordinate, max_coordinate),
                      std::clamp(x_raw.y, min_coordinate, max_coordinate)};
-        if (is_next_immovable_dof(i * 2))
-        {
-            x_cand.x = x.x;
-        }
-        if (is_next_immovable_dof(i * 2 + 1))
-        {
-            x_cand.y = x.y;
-        }
 
         state.predicted_compliance_reduction -= dot(g, x_cand - x);
         state.nodes[i] = x_cand;
@@ -390,7 +398,6 @@ void make_triangulation(const std::vector<vec2> &nodes,
         [](const vec2 &v) { return v.y; });
     cdt.eraseSuperTriangle();
 
-    // FIXME: is there a better way to do this?
     const auto edges = CDT::extractEdgesFromTriangles(cdt.triangles);
     elements.clear();
     elements.reserve(edges.size());
@@ -406,7 +413,7 @@ void optimization_init(const std::vector<vec2> &nodes,
                        const std::vector<std::uint32_t> &fixed_dofs,
                        const std::vector<std::uint32_t> &loaded_dofs,
                        const std::vector<float> &loads,
-                       const std::vector<std::uint32_t> &immovable_dofs,
+                       const std::vector<std::uint32_t> &immovable_nodes,
                        Optimization_state &state)
 {
     const auto num_dofs = nodes.size() * 2;
@@ -428,18 +435,15 @@ void optimization_init(const std::vector<vec2> &nodes,
     assert(std::ranges::all_of(
         loaded_dofs, [num_dofs](auto dof) { return dof < num_dofs; }));
 
-    assert(std::ranges::is_sorted(immovable_dofs));
-    assert(std::ranges::adjacent_find(immovable_dofs) ==
-           std::ranges::end(immovable_dofs));
-    assert(immovable_dofs.empty() || immovable_dofs.back() < num_dofs);
+    assert(std::ranges::is_sorted(immovable_nodes));
+    assert(std::ranges::adjacent_find(immovable_nodes) ==
+           std::ranges::end(immovable_nodes));
+    assert(immovable_nodes.empty() || immovable_nodes.back() < nodes.size());
 
     // FIXME: avoid re-allocations
 
     state.nodes = nodes;
     state.elements = elements;
-
-    state.fixed_dofs = fixed_dofs;
-    state.immovable_dofs = immovable_dofs;
 
     const auto num_free_dofs = num_dofs - fixed_dofs.size();
     state.free_dofs.resize(num_free_dofs);
@@ -459,6 +463,23 @@ void optimization_init(const std::vector<vec2> &nodes,
             state.all_to_free_dofs[i] = free_dof_index;
             state.free_dofs[free_dof_index] = i;
             ++free_dof_index;
+        }
+    }
+
+    state.movable_nodes.resize(nodes.size() - immovable_nodes.size());
+    std::uint32_t movable_node_index {0};
+    std::uint32_t immovable_node_index {0};
+    for (std::uint32_t i {0}; i < nodes.size(); ++i)
+    {
+        if (immovable_node_index < immovable_nodes.size() &&
+            i == immovable_nodes[immovable_node_index])
+        {
+            ++immovable_node_index;
+        }
+        else
+        {
+            state.movable_nodes[movable_node_index] = i;
+            ++movable_node_index;
         }
     }
 
@@ -504,9 +525,9 @@ void optimization_create_problem(Optimization_state &state, Problem problem)
         const std::vector<std::uint32_t> loaded_dofs {4, 5};
         const std::vector<float> loads {0.0f, -1.0f};
 
-        const std::vector<std::uint32_t> immovable_dofs {0, 1, 2, 3, 4, 5};
+        const std::vector<std::uint32_t> immovable_nodes {0, 1, 2};
 
-        constexpr std::uint32_t num_free_nodes {1000};
+        constexpr std::uint32_t num_free_nodes {200};
         std::minstd_rand rng(17657575);
         std::uniform_real_distribution<float> x(-0.8f, 0.8f);
         std::uniform_real_distribution<float> y(-0.8f, 0.8f);
@@ -531,7 +552,7 @@ void optimization_create_problem(Optimization_state &state, Problem problem)
                           fixed_dofs,
                           loaded_dofs,
                           loads,
-                          immovable_dofs,
+                          immovable_nodes,
                           state);
     }
     else if (problem == Problem::regular_grid)
@@ -555,23 +576,20 @@ void optimization_create_problem(Optimization_state &state, Problem problem)
         const auto node = [num_x](std::uint32_t iy, std::uint32_t ix)
         { return iy * num_x + ix; };
 
-        const auto dof =
-            [&node](std::uint32_t iy, std::uint32_t ix, std::uint32_t axis)
-        { return node(iy, ix) * 2 + axis; };
+        const std::array fixed_nodes {node(num_y / 4, 0),
+                                      node(num_y * 3 / 4, 0)};
+        const std::vector<std::uint32_t> fixed_dofs {fixed_nodes[0] * 2 + 0,
+                                                     fixed_nodes[0] * 2 + 1,
+                                                     fixed_nodes[1] * 2 + 0,
+                                                     fixed_nodes[1] * 2 + 1};
 
-        const std::vector<std::uint32_t> fixed_dofs {dof(num_y / 4, 0, 0),
-                                                     dof(num_y / 4, 0, 1),
-                                                     dof(num_y * 3 / 4, 0, 0),
-                                                     dof(num_y * 3 / 4, 0, 1)};
-        const std::vector<std::uint32_t> loaded_dofs {
-            dof(num_y / 2, num_x - 1, 0), dof(num_y / 2, num_x - 1, 1)};
-        const std::vector<float> loads {0.0f, -1.0f};
-        std::vector<std::uint32_t> immovable_dofs;
-        immovable_dofs.insert(
-            immovable_dofs.end(), fixed_dofs.begin(), fixed_dofs.end());
-        immovable_dofs.insert(
-            immovable_dofs.end(), loaded_dofs.begin(), loaded_dofs.end());
-        std::ranges::sort(immovable_dofs);
+        const auto loaded_node = node(num_y / 2, num_x - 1);
+        const std::vector<std::uint32_t> loaded_dofs {loaded_node * 2 + 1};
+        const std::vector<float> loads {-1.0f};
+
+        std::vector<std::uint32_t> immovable_nodes {
+            fixed_nodes[0], fixed_nodes[1], loaded_node};
+        std::ranges::sort(immovable_nodes);
 
         std::vector<Element> elements;
         for (std::uint32_t iy {0}; iy < num_y; ++iy)
@@ -602,7 +620,74 @@ void optimization_create_problem(Optimization_state &state, Problem problem)
                           fixed_dofs,
                           loaded_dofs,
                           loads,
-                          immovable_dofs,
+                          immovable_nodes,
+                          state);
+    }
+    else if (problem == Problem::hexagonal)
+    {
+        constexpr unsigned int num_x {20};
+        const auto side = 1.6f / static_cast<float>(num_x - 1);
+        const auto height = std::numbers::sqrt3_v<float> * 0.5f * side;
+        const auto num_y =
+            static_cast<unsigned int>(std::floor(1.6f / height)) + 1;
+        const auto total_height = static_cast<float>(num_y - 1) * height;
+
+        std::vector<vec2> nodes;
+        for (unsigned int iy {0}; iy < num_y; ++iy)
+        {
+            const auto y =
+                -total_height * 0.5f + static_cast<float>(iy) * height;
+            const auto is_offset = static_cast<bool>(iy & 1);
+            for (unsigned int ix {0}; ix < (is_offset ? num_x - 1 : num_x);
+                 ++ix)
+            {
+                const auto x = -0.8f + (is_offset ? 0.5f * side : 0.0f) +
+                               static_cast<float>(ix) * side;
+
+                nodes.emplace_back(x, y);
+            }
+        }
+
+        const auto closest = [&nodes](float x, float y)
+        {
+            float min_distance {std::numeric_limits<float>::max()};
+            std::uint32_t index {};
+            for (std::uint32_t i {0}; i < nodes.size(); ++i)
+            {
+                if (const auto distance = norm(vec2 {x, y} - nodes[i]);
+                    distance < min_distance)
+                {
+                    min_distance = distance;
+                    index = i;
+                }
+            }
+            return index;
+        };
+
+        const std::array fixed_nodes {closest(-0.8f, -0.4f),
+                                      closest(-0.8f, 0.4f)};
+        const std::vector<std::uint32_t> fixed_dofs {fixed_nodes[0] * 2 + 0,
+                                                     fixed_nodes[0] * 2 + 1,
+                                                     fixed_nodes[1] * 2 + 0,
+                                                     fixed_nodes[1] * 2 + 1};
+
+        const auto loaded_node = closest(0.8f, 0.0f);
+        const std::vector<std::uint32_t> loaded_dofs {loaded_node * 2 + 1};
+        const std::vector<float> loads {-1.0f};
+
+        std::vector<std::uint32_t> immovable_nodes {
+            fixed_nodes[0], fixed_nodes[1], loaded_node};
+        std::ranges::sort(immovable_nodes);
+
+        std::vector<Element> elements;
+        make_triangulation(nodes, elements);
+
+        optimization_init(nodes,
+                          elements,
+                          fixed_dofs,
+                          loaded_dofs,
+                          loads,
+                          immovable_nodes,
                           state);
     }
     else

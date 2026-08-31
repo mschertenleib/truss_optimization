@@ -512,12 +512,13 @@ void create_vertex_and_index_buffers(Render_data &render_data)
 {
     GLuint vao_gl {};
     glGenVertexArrays(1, &vao_gl);
-    render_data.vao.reset(vao_gl, GL_array_deleter {glDeleteVertexArrays});
+    render_data.vao =
+        Unique_handle(vao_gl, GL_array_deleter {glDeleteVertexArrays});
     glBindVertexArray(render_data.vao.get());
 
     GLuint vbo_gl {};
     glGenBuffers(1, &vbo_gl);
-    render_data.vbo.reset(vbo_gl, GL_array_deleter {glDeleteBuffers});
+    render_data.vbo = Unique_handle(vbo_gl, GL_array_deleter {glDeleteBuffers});
     glBindBuffer(GL_ARRAY_BUFFER, render_data.vbo.get());
     glBufferData(
         GL_ARRAY_BUFFER,
@@ -527,7 +528,7 @@ void create_vertex_and_index_buffers(Render_data &render_data)
 
     GLuint ibo_gl {};
     glGenBuffers(1, &ibo_gl);
-    render_data.ibo.reset(ibo_gl, GL_array_deleter {glDeleteBuffers});
+    render_data.ibo = Unique_handle(ibo_gl, GL_array_deleter {glDeleteBuffers});
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, render_data.ibo.get());
     glBufferData(GL_ELEMENT_ARRAY_BUFFER,
                  static_cast<GLsizei>(render_data.indices.size() *
@@ -810,7 +811,8 @@ void make_ui(Application &app)
                     1000.0 / static_cast<double>(ImGui::GetIO().Framerate),
                     static_cast<double>(ImGui::GetIO().Framerate));
 
-        constexpr const char *items[] {"Regular grid", "Random Delaunay"};
+        constexpr const char *items[] {
+            "Regular grid", "Random Delaunay", "Hexagonal"};
         auto current_item = static_cast<int>(app.problem);
         ImGui::Combo("Problem", &current_item, items, std::size(items));
         app.problem = static_cast<Problem>(current_item);

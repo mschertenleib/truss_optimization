@@ -83,10 +83,8 @@ target_link_libraries(imgui PRIVATE glfw)
 add_executable(${target_name})
 target_sources(${target_name} PRIVATE
     src/main.cpp
-    src/application.cpp src/application.hpp
-    src/optimization.cpp src/optimization.hpp
-    src/unique_handle.hpp
-    src/vec.hpp
+    src/application.cpp
+    src/optimization.cpp
 )
 target_include_directories(${target_name} SYSTEM PRIVATE
     ${eigen_SOURCE_DIR}

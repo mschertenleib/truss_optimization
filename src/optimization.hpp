@@ -7,6 +7,7 @@
 #include <Eigen/SparseCholesky>
 #include <Eigen/SparseCore>
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -20,26 +21,20 @@ struct Optimization_state
 {
     std::vector<vec2> nodes;
     std::vector<Element> elements;
-
-    std::vector<std::uint32_t> fixed_dofs;
     std::vector<std::uint32_t> free_dofs;
     std::vector<std::uint32_t> all_to_free_dofs;
-    std::vector<std::uint32_t> immovable_dofs;
-
-    std::vector<float> activations;
-    std::vector<float> new_activations;
-
-    // For each element, for each coefficient of the local 4x4 matrix, index
-    // into stiffness_matrix.valuePtr()
+    Eigen::SparseMatrix<float, Eigen::ColMajor> stiffness_matrix;
     std::vector<std::array<std::uint32_t, 16>> element_k_indices;
     std::vector<vec2> element_directions;
     std::vector<float> element_lengths;
-    Eigen::SparseMatrix<float, Eigen::ColMajor> stiffness_matrix;
-    bool sparsity_stale;
+    std::vector<float> activations;
     Eigen::SimplicialLDLT<decltype(stiffness_matrix), Eigen::Lower> solver;
     Eigen::VectorXf loads;
     Eigen::VectorXf displacements;
+    bool sparsity_stale;
 
+    std::vector<std::uint32_t> movable_nodes;
+    std::vector<float> new_activations;
     std::vector<float> axial_forces;
     std::vector<vec2> dC_dx;
     float compliance;
@@ -51,7 +46,8 @@ struct Optimization_state
 enum struct Problem
 {
     regular_grid,
-    random_delaunay
+    random_delaunay,
+    hexagonal
 };
 
 void optimization_create_problem(Optimization_state &state, Problem problem);
